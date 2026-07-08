@@ -40,8 +40,13 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
         "qemu-system-aarch64",
         "-M",
         "virt",
+        // "max" rather than "cortex-a72": real cortex-a72 has no PAC
+        // (FEAT_PAuth), and the kernel's PAC groundwork (arch/aarch64/pac.zig)
+        // needs a CPU model that implements it to actually exercise.
         "-cpu",
-        "cortex-a72",
+        "max",
+        "-smp",
+        "4",
         "-nographic",
         "-kernel",
     });

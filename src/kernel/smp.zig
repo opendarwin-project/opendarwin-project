@@ -1,13 +1,15 @@
 //! Secondary-core bring-up.
 //!
-//! Boot model: QEMU virt's `-kernel` boot starts every vCPU executing at
-//! the same entry point simultaneously (no firmware, no PSCI CPU_ON
-//! needed) - which is exactly why start.S already parks non-primary cores
-//! in a wfe loop. So instead of PSCI, secondary cores are released by the
-//! primary setting a flag and issuing `sev`; each parked core wakes,
-//! rechecks the flag, and if set, proceeds through its own (per-core: FP
-//! enable, SCTLR.A clear, stack, MMU) bring-up before calling into
-//! secondaryMain below. See start.S's secondary-core path.
+//! Boot model: QEMU virt's secondary vCPUs are genuinely powered off at
+//! reset for a direct `-kernel` boot (confirmed by checking the machine's
+//! generated DTB - see psci.zig), so real PSCI CPU_ON is what actually
+//! starts them; wakeSecondaries() below does that. start.S's non-primary
+//! cores still park in a wfe loop checking a flag first (harmless/
+//! defensive either way, and it's how a core released by CPU_ON re-enters
+//! the normal boot path with no race - see wakeSecondaries()'s comment).
+//! Each released core proceeds through its own (per-core: FP enable,
+//! SCTLR.A clear, stack, MMU) bring-up before calling into secondaryMain
+//! below.
 
 const mmu = @import("mm/mmu.zig");
 const exceptions = @import("arch/aarch64/exceptions.zig");
@@ -17,6 +19,7 @@ const uart = @import("drivers/uart.zig");
 const sched = @import("proc/sched.zig");
 const cpu = @import("arch/aarch64/cpu.zig");
 const psci = @import("drivers/psci.zig");
+const pac = @import("arch/aarch64/pac.zig");
 
 extern const _start: u8;
 
@@ -65,6 +68,10 @@ export fn secondaryMain(core_id: u64) callconv(.c) noreturn {
     // for itself.
     gic.enable(timer.IRQ);
     timer.init(5);
+
+    // SCTLR_EL1 is per-core; availability itself is a CPU-wide property so
+    // checking it again per-core is redundant but harmless.
+    if (pac.available()) pac.enable();
 
     uart.print("opendarwin: secondary core online\n");
 

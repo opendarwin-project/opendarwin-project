@@ -17,6 +17,7 @@ const mmu = @import("../mm/mmu.zig");
 const context = @import("../arch/aarch64/context.zig");
 const Task = @import("task.zig").Task;
 const smp = @import("../smp.zig");
+const pac = @import("../arch/aarch64/pac.zig");
 
 const MAX_TASKS = 8;
 
@@ -81,6 +82,7 @@ fn switchTo(frame: *context.Frame, core_id: u64, idx: usize) void {
     running[core_id] = idx;
     frame.* = slots[idx].task.frame;
     mmu.switchTtbr0(slots[idx].task.ttbr0);
+    pac.loadKeys(&slots[idx].task.pac_keys);
 }
 
 /// Defined in arch/aarch64/task_entry.S.
@@ -92,6 +94,7 @@ extern fn enterUserspace(frame: *context.Frame, ttbr0_phys: u64) noreturn;
 pub fn runCore(core_id: u64) noreturn {
     const idx = firstAliveForCore(core_id) orelse haltForever();
     running[core_id] = idx;
+    pac.loadKeys(&slots[idx].task.pac_keys);
     enterUserspace(&slots[idx].task.frame, @intFromPtr(slots[idx].task.ttbr0));
 }
 

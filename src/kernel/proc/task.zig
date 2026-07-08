@@ -1,5 +1,8 @@
 const mmu = @import("../mm/mmu.zig");
 const context = @import("../arch/aarch64/context.zig");
+const pac = @import("../arch/aarch64/pac.zig");
+
+var next_pac_seed: u64 = 0x5EED_5EED_5EED_5EED;
 
 /// One EL0 task: its own address space (a superset table containing the
 /// shared kernel mappings + this task's user segments - see mmu.zig's
@@ -10,6 +13,11 @@ const context = @import("../arch/aarch64/context.zig");
 pub const Task = struct {
     ttbr0: *mmu.Table,
     frame: context.Frame,
+    /// Distinct per task (see pac.zig's module doc comment on why these
+    /// aren't cryptographically random yet) - installed on every switch to
+    /// this task, same as TTBR0, since the key registers aren't banked in
+    /// hardware.
+    pac_keys: pac.Keys,
 
     /// Builds a task whose user address space maps `user_regions`, ready to
     /// start executing at `entry` (VA, == PA under this milestone's
@@ -24,9 +32,11 @@ pub const Task = struct {
             .far_el1 = 0,
         };
         _ = &frame;
+        next_pac_seed +%= 1;
         return .{
             .ttbr0 = mmu.newTaskTable(user_regions),
             .frame = frame,
+            .pac_keys = pac.deriveKeys(next_pac_seed),
         };
     }
 };

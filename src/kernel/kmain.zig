@@ -6,9 +6,11 @@ const gic = @import("drivers/gic.zig");
 const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
+const pac = @import("arch/aarch64/pac.zig");
 
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
+const pac_test_macho = @embedFile("loader/testdata/pac_test");
 
 /// Loads a static arm64 Mach-O (see loader/testdata/*.S for how these are
 /// built) and registers it with the scheduler as a new task with its own
@@ -56,12 +58,22 @@ export fn kmain() callconv(.c) noreturn {
     timer.init(5); // 5ms tick - short enough to preempt mid busy-wait
     uart.print("opendarwin: timer + GIC ready\n");
 
+    // PAC groundwork: SCTLR_EL1 is per-core, so every core enables this for
+    // itself (smp.zig's secondaryMain does the same for secondaries).
+    if (pac.available()) {
+        pac.enable();
+        uart.print("opendarwin: PAC available and enabled (core 0)\n");
+    } else {
+        uart.print("opendarwin: PAC not available on this CPU\n");
+    }
+
     // Spawned before any secondary core is released: sched.spawn()'s
     // static core-assignment (task N -> core N) needs to finish while only
     // the primary is running, since it's otherwise unsynchronized (see
     // sched.zig's module doc comment).
     spawnFromMachO(loop_a_macho);
     spawnFromMachO(loop_b_macho);
+    spawnFromMachO(pac_test_macho); // -> core 2 (see sched.spawn()'s task-N-to-core-N assignment)
 
     // Unmask IRQ at EL1 now that the GIC/timer/scheduler are all ready;
     // PSTATE.I has been set since the EL2->EL1 drop in start.S; nothing
