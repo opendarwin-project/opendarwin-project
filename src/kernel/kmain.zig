@@ -16,6 +16,7 @@ const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
 const pac_test_macho = @embedFile("loader/testdata/pac_test");
 const hello_c_macho = @embedFile("loader/testdata/hello_c");
+const pie_test_macho = @embedFile("loader/testdata/pie_test");
 
 extern var __userpages_end: u8;
 
@@ -136,9 +137,10 @@ export fn kmain() callconv(.c) noreturn {
     // the primary is running, since it's otherwise unsynchronized (see
     // sched.zig's module doc comment).
     spawnFromMachO(hello_c_macho);
+    spawnFromMachO(pie_test_macho);
     spawnFromMachO(loop_a_macho);
     spawnFromMachO(loop_b_macho);
-    spawnFromMachO(pac_test_macho); // -> core 2 (see sched.spawn()'s task-N-to-core-N assignment)
+    spawnFromMachO(pac_test_macho);
 
     // Unmask IRQ at EL1 now that the GIC/timer/scheduler are all ready;
     // PSTATE.I has been set since the EL2->EL1 drop in start.S; nothing
