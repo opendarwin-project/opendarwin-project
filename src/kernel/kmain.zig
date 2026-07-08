@@ -12,6 +12,7 @@ const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
 const pac = @import("arch/aarch64/pac.zig");
 const devicetree = @import("devicetree.zig");
+const fat = @import("fs/fat.zig");
 
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
@@ -82,6 +83,11 @@ export fn kmain() callconv(.c) noreturn {
     if (dtb_found) |found| {
         if (virtio_blk.init(found.virtio_blk_bases[0..found.virtio_blk_count])) {
             uart.print("opendarwin: virtio-blk device ready\n");
+            if (fat.mount(virtio_blk.block())) {
+                uart.print("opendarwin: rootfs mounted (FAT)\n");
+            } else {
+                uart.print("opendarwin: rootfs mount failed\n");
+            }
         } else {
             uart.print("opendarwin: no virtio-blk device found\n");
         }
