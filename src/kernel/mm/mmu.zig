@@ -84,7 +84,13 @@ fn levelIndex(va: u64, level: u2) u9 {
 /// pool. Real physical-page allocation (mm/pmm.zig) replaces this once the
 /// rest of the memory subsystem exists; for milestone 1's fixed kernel
 /// mapping set this is sufficient and avoids a boot-order dependency on pmm.
-const MAX_BOOT_TABLES = 64;
+// Sparse shared-cache mappings (loader/shared_cache.zig) each need fresh
+// level0/1/2 radix-tree nodes - their VAs (e.g. 0x180xxxxxxx, 0x1e0xxxxxxx,
+// 0x1e8xxxxxxx) are nowhere near each other or the kernel's own narrow
+// low-address range, so a handful of dylib segments can burn through many
+// tables fast. 64 was fine for the identity-mapped-only milestone; raised
+// generously now that per-task extra mappings exist.
+const MAX_BOOT_TABLES = 512;
 var table_pool: [MAX_BOOT_TABLES]Table align(PAGE_SIZE) = undefined;
 var table_pool_used: usize = 0;
 
@@ -172,7 +178,7 @@ pub const KERNEL_LOAD_ADDR: u64 = 0x4008_0000;
 // Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x200000;` pad
 // before .userpages - see that file's comment for why this needs to be a
 // hard boundary rather than a generous guess.
-pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0020_0000;
+pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0080_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
 pub const GIC_DIST_BASE: u64 = 0x0800_0000;
 pub const GIC_MMIO_LEN: u64 = 0x0002_0000; // covers both GICD and GICC windows
@@ -309,7 +315,7 @@ pub fn mapExtra(pa: u64, len: u64, prot: Prot) void {
 // copies are safe again (Normal memory tolerates unaligned/wide accesses),
 // so unlike the boot-time code above these don't need the same care.
 
-const MAX_BOOT_PAGES = 64;
+const MAX_BOOT_PAGES = 256;
 // linksection(".userpages"): deliberately placed outside the range
 // kernel_regions maps as kernel-only - see linker.ld and the module doc
 // comment for why sharing that range with task-owned pages is fatal.

@@ -41,14 +41,31 @@ var running: [smp.MAX_CPUS]?usize = [_]?usize{null} ** smp.MAX_CPUS;
 /// tasks than cores). Must be called before any core (primary or
 /// secondary) starts running tasks - single-threaded at this point, so no
 /// locking is needed here either.
-pub fn spawn(user_regions: []const mmu.Region, entry: u64, stack_top: u64) void {
+pub fn spawn(user_regions: []const mmu.Region, entry: u64, stack_top: u64) usize {
     if (count >= MAX_TASKS) @panic("sched: out of task slots");
-    slots[count] = .{
+    const idx = count;
+    slots[idx] = .{
         .task = Task.create(user_regions, entry, stack_top),
         .alive = true,
-        .owner_core = count % smp.MAX_CPUS,
+        .owner_core = idx % smp.MAX_CPUS,
     };
     count += 1;
+    return idx;
+}
+
+/// The page table backing a spawned task, for mapping extra non-identity
+/// ranges into it after spawn() (e.g. loader/dyld.zig's shared-cache blobs,
+/// which live at their real dyld addresses rather than wherever their
+/// physical backing was allocated - see mmu.zig's mapPages).
+pub fn taskTable(idx: usize) *mmu.Table {
+    return slots[idx].task.ttbr0;
+}
+
+/// Opts a spawned task out of PAC enforcement - see pac.zig's
+/// `setEnforcement` doc comment on why loader/dyld.zig's dynamic binaries
+/// need this.
+pub fn setPacEnforcement(idx: usize, enforce: bool) void {
+    slots[idx].task.pac_enforce = enforce;
 }
 
 fn nextAliveForCore(core_id: u64, from: usize) ?usize {
@@ -84,6 +101,7 @@ fn switchTo(frame: *context.Frame, core_id: u64, idx: usize) void {
     frame.* = slots[idx].task.frame;
     mmu.switchTtbr0(slots[idx].task.ttbr0);
     pac.loadKeys(&slots[idx].task.pac_keys);
+    pac.setEnforcement(slots[idx].task.pac_enforce);
 }
 
 /// Defined in arch/aarch64/task_entry.S.
@@ -96,6 +114,7 @@ pub fn runCore(core_id: u64) noreturn {
     const idx = firstAliveForCore(core_id) orelse haltForever();
     running[core_id] = idx;
     pac.loadKeys(&slots[idx].task.pac_keys);
+    pac.setEnforcement(slots[idx].task.pac_enforce);
     enterUserspace(&slots[idx].task.frame, @intFromPtr(slots[idx].task.ttbr0));
 }
 

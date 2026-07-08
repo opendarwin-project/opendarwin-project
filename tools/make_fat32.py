@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Hand-build a minimal FAT32 image with one file in the root directory, for
-testing src/kernel/fs/fat.zig + drivers/virtio_blk.zig against `zig build
-qemu -Drootfs=<image>`.
+"""Hand-build a minimal FAT32 image with one or more files in the root
+directory, for testing src/kernel/fs/fat.zig + drivers/virtio_blk.zig against
+`zig build qemu -Drootfs=<image>`.
 
 Pure userspace, no device nodes and no root/mkfs.fat dependency - just writes
 bytes to a plain file.
 
-Usage: make_fat32.py <out.img> <8.3-name, e.g. TEST.TXT> <source-file>
+Usage:
+  make_fat32.py <out.img> <8.3-name> <source-file>            (single file)
+  make_fat32.py <out.img> --multi <8.3-name>=<source-file> ... (one or more)
 """
-
 import struct
 import sys
 
@@ -18,7 +19,9 @@ RESERVED_SECTORS = 32
 NUM_FATS = 2
 
 
-def build(out_path, file_name_8_3, file_data, total_sectors=16 * 1024):  # 8MB image
+def build(out_path, files, total_sectors=64 * 1024):  # 32MB image
+    """`files` is a list of (8.3-name, bytes) tuples, all placed in the root
+    directory, each in its own single-cluster-chain run starting at cluster 3."""
     fat_size = 512  # sectors per FAT, generously oversized for this tiny image
     first_data_sector = RESERVED_SECTORS + NUM_FATS * fat_size
     root_cluster = 2
@@ -55,35 +58,41 @@ def build(out_path, file_name_8_3, file_data, total_sectors=16 * 1024):  # 8MB i
     bs[511] = 0xAA
     img[0:SECTOR] = bs
 
-    # --- FATs: cluster 0/1 reserved, cluster 2 (root dir) EOC, cluster 3 (file) EOC ---
+    if len(files) > 16:
+        raise ValueError("this builder's fixed FAT size only budgets for a handful of files")
+
+    # cluster 0/1 reserved, cluster 2 = root dir, clusters 3..3+len(files)-1 = one per file
     def write_fat(fat_index):
         base = (RESERVED_SECTORS + fat_index * fat_size) * SECTOR
         struct.pack_into("<I", img, base + 0, 0x0FFFFFF8)
         struct.pack_into("<I", img, base + 4, 0x0FFFFFFF)
         struct.pack_into("<I", img, base + 8, 0x0FFFFFFF)  # cluster 2 (root dir): EOC
-        struct.pack_into("<I", img, base + 12, 0x0FFFFFFF)  # cluster 3 (file): EOC
+        for i in range(len(files)):
+            struct.pack_into("<I", img, base + 12 + i * 4, 0x0FFFFFFF)  # each file: single-cluster EOC
 
     write_fat(0)
     write_fat(1)
 
     # --- Root directory (cluster 2) ---
     root_dir_offset = first_data_sector * SECTOR  # cluster 2 == first data cluster
-    name, ext = (file_name_8_3.split(".") + [""])[:2]
-    name = name.ljust(8)[:8].upper().encode("ascii")
-    ext = ext.ljust(3)[:3].upper().encode("ascii")
-    entry = bytearray(32)
-    entry[0:8] = name
-    entry[8:11] = ext
-    entry[11] = 0x20  # archive attribute
-    file_cluster = 3
-    struct.pack_into("<H", entry, 20, (file_cluster >> 16) & 0xFFFF)
-    struct.pack_into("<H", entry, 26, file_cluster & 0xFFFF)
-    struct.pack_into("<I", entry, 28, len(file_data))
-    img[root_dir_offset : root_dir_offset + 32] = entry
+    for i, (file_name_8_3, file_data) in enumerate(files):
+        if len(file_data) > SECTORS_PER_CLUSTER * SECTOR:
+            raise ValueError(f"{file_name_8_3}: {len(file_data)} bytes exceeds this builder's single-cluster-per-file limit")
+        name, ext = (file_name_8_3.split(".") + [""])[:2]
+        name = name.ljust(8)[:8].upper().encode("ascii")
+        ext = ext.ljust(3)[:3].upper().encode("ascii")
+        entry = bytearray(32)
+        entry[0:8] = name
+        entry[8:11] = ext
+        entry[11] = 0x20  # archive attribute
+        file_cluster = 3 + i
+        struct.pack_into("<H", entry, 20, (file_cluster >> 16) & 0xFFFF)
+        struct.pack_into("<H", entry, 26, file_cluster & 0xFFFF)
+        struct.pack_into("<I", entry, 28, len(file_data))
+        img[root_dir_offset + i * 32:root_dir_offset + i * 32 + 32] = entry
 
-    # --- File data (cluster 3) ---
-    file_offset = (first_data_sector + SECTORS_PER_CLUSTER) * SECTOR
-    img[file_offset : file_offset + len(file_data)] = file_data
+        file_offset = (first_data_sector + (file_cluster - 2) * SECTORS_PER_CLUSTER) * SECTOR
+        img[file_offset:file_offset + len(file_data)] = file_data
 
     with open(out_path, "wb") as f:
         f.write(img)
@@ -91,7 +100,14 @@ def build(out_path, file_name_8_3, file_data, total_sectors=16 * 1024):  # 8MB i
 
 if __name__ == "__main__":
     out = sys.argv[1]
-    fname = sys.argv[2]
-    data = open(sys.argv[3], "rb").read()
-    build(out, fname, data)
-    print(f"wrote {out}: {fname} ({len(data)} bytes)")
+    if sys.argv[2] == "--multi":
+        files = []
+        for spec in sys.argv[3:]:
+            fname, src = spec.split("=", 1)
+            files.append((fname, open(src, "rb").read()))
+    else:
+        fname = sys.argv[2]
+        files = [(fname, open(sys.argv[3], "rb").read())]
+    build(out, files)
+    for fname, data in files:
+        print(f"wrote {out}: {fname} ({len(data)} bytes)")

@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const mmu = @import("../mm/mmu.zig");
+const dyld = @import("dyld.zig");
 
 const MH_MAGIC_64: u32 = 0xfeedfacf;
 const CPU_TYPE_ARM64: u32 = 0x0100000c;
@@ -14,8 +15,9 @@ const CPU_TYPE_ARM64_MASK: u32 = 0xff00_ffff;
 
 const LC_SEGMENT_64: u32 = 0x19;
 const LC_UNIXTHREAD: u32 = 0x5;
-const LC_MAIN: u32 = 0x1e | 0x80000000;
+const LC_MAIN: u32 = 0x28 | 0x80000000;
 const LC_DYLD_INFO_ONLY: u32 = 0x0b | 0x80000000;
+const LC_DYLD_CHAINED_FIXUPS: u32 = 0x34 | 0x80000000;
 
 const VM_PROT_READ: u32 = 1;
 const VM_PROT_WRITE: u32 = 2;
@@ -80,6 +82,9 @@ pub const LoadError = error{
     WrongArch,
     NoEntryPoint,
     Truncated,
+    UnsupportedImportFormat,
+    UnsupportedPointerFormat,
+    UnresolvedSymbol,
 };
 
 pub const LoadResult = struct {
@@ -87,9 +92,21 @@ pub const LoadResult = struct {
 };
 
 /// Maps every LC_SEGMENT_64 in `image` into a single contiguous physical
-/// block, preserving their vmaddr-relative layout, then applies any rebase
-/// fixups from LC_DYLD_INFO_ONLY. Returns the entry point (physical address).
-pub fn load(image: []const u8, regions_out: []mmu.Region, regions_used: *usize) LoadError!LoadResult {
+/// block, preserving their vmaddr-relative layout, then applies fixups:
+/// classic rebase opcodes if LC_DYLD_INFO_ONLY is present, or (a real
+/// toolchain's modern output - see loader/dyld.zig's module comment)
+/// LC_DYLD_CHAINED_FIXUPS's rebase+bind chains if present instead. Chained
+/// binds are resolved via `resolver`/`resolver_ctx` (null for images that
+/// don't need one, e.g. the self-contained static test binaries under
+/// loader/testdata/ - passing chained-fixups binds without a resolver is a
+/// `LoadError.UnresolvedSymbol`). Returns the entry point (physical address).
+pub fn load(
+    image: []const u8,
+    regions_out: []mmu.Region,
+    regions_used: *usize,
+    resolver: ?dyld.Resolver,
+    resolver_ctx: ?*anyopaque,
+) LoadError!LoadResult {
     if (image.len < @sizeOf(MachHeader64)) return LoadError.Truncated;
     const header: *const MachHeader64 = @ptrCast(@alignCast(image.ptr));
     if (header.magic != MH_MAGIC_64) return LoadError.BadMagic;
@@ -98,6 +115,7 @@ pub fn load(image: []const u8, regions_out: []mmu.Region, regions_used: *usize) 
     var entry_vmaddr: ?u64 = null;
     var entry_fileoff: ?u64 = null;
     var dyldinfo: ?DyldInfo = null;
+    var chained_fixups: ?[]const u8 = null;
 
     var seg_headers: [MAX_SEGMENTS]SegInfo = undefined;
     var seg_count: usize = 0;
@@ -142,6 +160,13 @@ pub fn load(image: []const u8, regions_out: []mmu.Region, regions_used: *usize) 
                     .rebase_off = readU32(image[off + 8 ..]),
                     .rebase_size = readU32(image[off + 12 ..]),
                 };
+            },
+            LC_DYLD_CHAINED_FIXUPS => {
+                const dataoff = readU32(image[off + 8 ..]);
+                const datasize = readU32(image[off + 12 ..]);
+                if (dataoff + datasize <= image.len) {
+                    chained_fixups = image[dataoff..][0..datasize];
+                }
             },
             else => {},
         }
@@ -228,6 +253,16 @@ pub fn load(image: []const u8, regions_out: []mmu.Region, regions_used: *usize) 
             const slide = base_pa -% min_vmaddr;
             applyRebase(image[info.rebase_off..][0..info.rebase_size], seg_headers[0..seg_count], base_pa, slide, min_vmaddr);
         }
+    }
+
+    if (chained_fixups) |bytes| {
+        const r = resolver orelse return LoadError.UnresolvedSymbol;
+        dyld.applyChainedFixups(bytes, base_pa, r, resolver_ctx) catch |err| return switch (err) {
+            error.Truncated => LoadError.Truncated,
+            error.UnsupportedImportFormat => LoadError.UnsupportedImportFormat,
+            error.UnsupportedPointerFormat => LoadError.UnsupportedPointerFormat,
+            error.UnresolvedSymbol => LoadError.UnresolvedSymbol,
+        };
     }
 
     return .{ .entry = base_pa + (raw_entry - min_vmaddr) };

@@ -48,7 +48,7 @@ SECTIONS
      * kernel ever actually grows past 2MB, this line makes the linker fail
      * loudly (location counter moving backward) instead of silently
      * reintroducing the page_pool/kernel_regions overlap bug. */
-    . = KERNEL_LOAD_ADDR + 0x200000;
+    . = KERNEL_LOAD_ADDR + 0x800000;
 
     /* Deliberately separate from .bss and placed after __kernel_end: pages
      * handed out by mm/mmu.zig's allocPage() (backing task code/data/stack

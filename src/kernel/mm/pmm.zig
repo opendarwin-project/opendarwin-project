@@ -56,6 +56,43 @@ pub fn allocPage() u64 {
     return page;
 }
 
+/// Allocates `count` physically-contiguous zeroed pages. Only safe to call
+/// before the free list has been fragmented by interleaved alloc/free
+/// traffic - `init()` builds it in strictly increasing address order (see
+/// that function's comment), so at this milestone (nothing else allocates
+/// from `pmm` before loader/dyld.zig's shared-cache blobs, which is the
+/// only caller needing more than one page) the first `count` free-list
+/// entries are guaranteed contiguous. Panics rather than silently
+/// fragmenting-and-retrying if that invariant is ever violated - a design
+/// that would need revisiting (e.g. a real buddy allocator) the moment a
+/// second multi-page caller shows up.
+pub fn allocPagesContig(count: u64) u64 {
+    if (count == 0) @panic("pmm: zero-page allocation");
+    if (count > 256) @panic("pmm: allocPagesContig count exceeds this milestone's bound");
+
+    var pages: [256]u64 = undefined;
+    pages[0] = free_head orelse @panic("pmm: out of memory");
+    var i: u64 = 1;
+    while (i < count) : (i += 1) {
+        const prev_ptr: *u64 = @ptrFromInt(pages[i - 1]);
+        const next = prev_ptr.*;
+        if (next != pages[i - 1] + PAGE_SIZE) {
+            @panic("pmm: allocPagesContig found a fragmented free list - see this function's doc comment");
+        }
+        pages[i] = next;
+    }
+
+    const last_ptr: *u64 = @ptrFromInt(pages[count - 1]);
+    free_head = last_ptr.*;
+    total_free_pages -= count;
+
+    for (pages[0..count]) |p| {
+        const ptr: [*]u8 = @ptrFromInt(p);
+        @memset(ptr[0..PAGE_SIZE], 0);
+    }
+    return pages[0];
+}
+
 /// Returns a page to the free pool. `pa` must be page-aligned and must
 /// have been previously returned by `allocPage()`.
 pub fn freePage(pa: u64) void {

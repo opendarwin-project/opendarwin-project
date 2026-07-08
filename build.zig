@@ -90,6 +90,45 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode, rootfs_path: ?[]
     qemu_step.dependOn(&qemu_cmd.step);
 }
 
+// Host-side tool (native target, not the freestanding kernel one): prepares
+// a FAT rootfs image from a real macOS dyld shared cache - see
+// tools/prepare_shared_cache.zig's module doc comment. Reuses
+// src/kernel/loader/{shared_cache,rootfs_manifest}.zig directly (both are
+// plain byte-parsing code with no freestanding-only dependencies), imported
+// as named modules since Zig 0.16 disallows a module's relative imports
+// climbing outside its own root directory.
+fn addPrepareSharedCacheTool(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
+    const shared_cache_mod = b.createModule(.{
+        .root_source_file = b.path("src/kernel/loader/shared_cache.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const rootfs_manifest_mod = b.createModule(.{
+        .root_source_file = b.path("src/kernel/loader/rootfs_manifest.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+
+    const tool_mod = b.createModule(.{
+        .root_source_file = b.path("tools/prepare_shared_cache.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "shared_cache", .module = shared_cache_mod },
+            .{ .name = "rootfs_manifest", .module = rootfs_manifest_mod },
+        },
+    });
+
+    const tool_exe = b.addExecutable(.{
+        .name = "prepare_shared_cache",
+        .root_module = tool_mod,
+    });
+    b.installArtifact(tool_exe);
+
+    const run_step = b.step("prepare-shared-cache", "Build tools/prepare_shared_cache (run it directly to prepare a rootfs image)");
+    run_step.dependOn(&b.addInstallArtifact(tool_exe, .{}).step);
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -115,6 +154,7 @@ pub fn build(b: *std.Build) void {
 
     const rootfs_path = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
     addKernel(b, optimize, rootfs_path);
+    addPrepareSharedCacheTool(b, optimize);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`

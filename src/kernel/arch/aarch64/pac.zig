@@ -49,6 +49,34 @@ pub fn enable() void {
     asm volatile ("isb");
 }
 
+/// Sets or clears SCTLR_EL1's PAC-enable bits for the *currently running*
+/// core - toggled per-task on every switch (see sched.zig's switchTo/
+/// runCore) rather than left globally on, since a real arm64e binary's
+/// signed pointers (loader/dyld.zig's chained-fixups binder and
+/// loader/shared_cache.zig's slide-info rebase both deliberately don't
+/// re-sign - see their doc comments) will genuinely fail authentication
+/// against this kernel's synthetic per-task keys, and FEAT_FPAC turns that
+/// mismatch into an immediate trap instead of a delayed one. Tasks that
+/// don't touch shared-cache content (e.g. pac_test, which explicitly
+/// exercises real sign/auth pairs against its own consistently-loaded
+/// per-task key) keep enforcement on.
+pub fn setEnforcement(enable_it: bool) void {
+    var sctlr: u64 = asm volatile ("mrs %[v], sctlr_el1"
+        : [v] "=r" (-> u64),
+    );
+    const EnDB: u64 = 1 << 13;
+    const EnDA: u64 = 1 << 27;
+    const EnIB: u64 = 1 << 30;
+    const EnIA: u64 = 1 << 31;
+    const mask = EnIA | EnIB | EnDA | EnDB;
+    if (enable_it) sctlr |= mask else sctlr &= ~mask;
+    asm volatile ("msr sctlr_el1, %[v]"
+        :
+        : [v] "r" (sctlr),
+    );
+    asm volatile ("isb");
+}
+
 /// One task's worth of PAC key material: APIAKey/APIBKey (instruction
 /// pointers - return addresses, function pointers) and APDAKey/APDBKey
 /// (data pointers). APGAKey (generic authentication, used by PACGA for

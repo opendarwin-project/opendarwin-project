@@ -22,6 +22,11 @@ pub const Task = struct {
     pac_keys: pac.Keys,
     ipc_space: IpcSpace,
     vmm: Vmm,
+    /// Whether SCTLR_EL1's PAC-enable bits should be on while this task
+    /// runs - see pac.zig's `setEnforcement` doc comment. Defaults to true
+    /// (existing behavior for every task except loader/dyld.zig's dynamic
+    /// binaries, which opt out via sched.setPacEnforcement after spawning).
+    pac_enforce: bool = true,
 
     /// Builds a task whose user address space maps `user_regions`, ready to
     /// start executing at `entry` (VA, == PA under this milestone's
