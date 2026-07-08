@@ -48,7 +48,8 @@ pub fn init(regions: []const MemoryRegion) void {
 /// (which under the identity mapping is also the kernel-virtual address).
 pub fn allocPage() u64 {
     const page = free_head orelse @panic("pmm: out of memory");
-    free_head = page.*;
+    const next_ptr: *u64 = @ptrFromInt(page);
+    free_head = next_ptr.*;
     total_free_pages -= 1;
     const ptr: [*]u8 = @ptrFromInt(page);
     @memset(ptr[0..PAGE_SIZE], 0);

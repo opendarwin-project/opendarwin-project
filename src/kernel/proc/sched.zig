@@ -115,6 +115,7 @@ pub fn tick(core_id: u64, frame: *context.Frame) void {
 pub fn exitCurrent(core_id: u64, frame: *context.Frame) void {
     const cur = running[core_id] orelse haltForever();
     slots[cur].alive = false;
+    // TODO: ipc_cleanup(&slots[cur].task.ipc_space);
     const next = nextAliveForCore(core_id, cur) orelse haltForever();
     switchTo(frame, core_id, next);
 }

@@ -9,14 +9,27 @@ const context = @import("../arch/aarch64/context.zig");
 const sched = @import("../proc/sched.zig");
 const cpu = @import("../arch/aarch64/cpu.zig");
 
+/// Decode the immediate from an SVC instruction at `elr - 4`.
+/// A64 encoding: [31:24]=0xD4 [23:21]=000 [20:5]=imm16 [4:0]=00001
+fn svcImm(elr: u64) u16 {
+    const instr = @as([*]const u32, @ptrFromInt(elr - 4))[0];
+    return @truncate(instr >> 5);
+}
+
 const SYS_exit: u64 = 1;
 const SYS_write: u64 = 4;
 
-/// Handles a caught SVC (AArch64) exception whose frame's x16 holds a BSD
-/// syscall number. Returns normally (caller ERETs back to x30... no -
-/// back to elr_el1) for syscalls that don't terminate the task; halts for
-/// exit and for anything unimplemented.
+/// Handles a caught SVC (AArch64) exception. The exception handler in
+/// exceptions.zig already dispatches on the exception class: svc #0x80
+/// (BSD syscall) and svc #0x81 (Mach trap) each arrive here with x16 set
+/// appropriately. See exceptions.zig's SVC handler for the split.
 pub fn handle(frame: *context.Frame) void {
+    // Distinguish Mach traps (svc #0x81) from BSD syscalls (svc #0x80)
+    // by decoding the SVC immediate from the instruction at elr_el1 - 4.
+    const imm = svcImm(frame.elr_el1);
+    if (imm == 0x81) {
+        return handleMachTrap(frame);
+    }
     const num = frame.x[16];
     switch (num) {
         SYS_write => sysWrite(frame),
@@ -28,6 +41,14 @@ pub fn handle(frame: *context.Frame) void {
             haltForever();
         },
     }
+}
+
+fn handleMachTrap(frame: *context.Frame) void {
+    const trap_num = frame.x[16];
+    uart.print("mach_trap: unimplemented trap ");
+    printDec(trap_num);
+    uart.print(", halting\n");
+    haltForever();
 }
 
 fn sysWrite(frame: *context.Frame) void {

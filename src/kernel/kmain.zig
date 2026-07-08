@@ -3,6 +3,7 @@ const exceptions = @import("arch/aarch64/exceptions.zig");
 const mmu = @import("mm/mmu.zig");
 const pmm = @import("mm/pmm.zig");
 const slab = @import("mm/slab.zig");
+const ipc = @import("ipc/init.zig");
 const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
 const timer = @import("drivers/timer.zig");
@@ -104,7 +105,10 @@ export fn kmain() callconv(.c) noreturn {
             mb_buf[mb_i] = '0' + @as(u8, @intCast(mb % 10));
             mb /= 10;
         }
-        if (mb_i == mb_buf.len) { mb_buf[mb_buf.len - 1] = '0'; mb_i = mb_buf.len - 1; }
+        if (mb_i == mb_buf.len) {
+            mb_buf[mb_buf.len - 1] = '0';
+            mb_i = mb_buf.len - 1;
+        }
         uart.print(mb_buf[mb_i..]);
         uart.print(" MB free)\n");
     } else {
@@ -113,6 +117,9 @@ export fn kmain() callconv(.c) noreturn {
 
     slab.init();
     uart.print("opendarwin: slab allocator ready\n");
+
+    ipc.init();
+    uart.print("opendarwin: IPC subsystem initialized\n");
 
     // PAC groundwork: SCTLR_EL1 is per-core, so every core enables this for
     // itself (smp.zig's secondaryMain does the same for secondaries).

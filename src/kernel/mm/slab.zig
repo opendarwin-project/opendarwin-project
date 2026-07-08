@@ -46,7 +46,7 @@ fn addPage(zone_idx: usize) void {
     while (off + obj_size <= PAGE_SIZE - HEADER_SIZE) : (off += obj_size) {
         const obj_ptr: *?*anyopaque = @ptrFromInt(obj_start + off);
         obj_ptr.* = zone.free_list;
-        zone.free_list = obj_ptr;
+        zone.free_list = @as(*anyopaque, @ptrCast(obj_ptr));
     }
 }
 
@@ -57,7 +57,7 @@ pub fn alloc(size: usize) *anyopaque {
     const zone = &zones[idx];
     if (zone.free_list == null) addPage(idx);
     const ptr = zone.free_list.?;
-    zone.free_list = @as(*?*anyopaque, @ptrCast(ptr)).*;
+    zone.free_list = @as(*?*anyopaque, @ptrCast(@alignCast(ptr))).*;
     return ptr;
 }
 
