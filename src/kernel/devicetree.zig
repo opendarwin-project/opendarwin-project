@@ -34,7 +34,18 @@ pub const Found = struct {
     /// Physical RAM base and size discovered from the /memory node.
     memory_base: ?u64 = null,
     memory_size: ?u64 = null,
+    /// MMIO bases of discovered virtio-mmio nodes matching the `.block` class.
+    /// QEMU virt's DTB lists one node per virtio-mmio transport slot whether
+    /// or not a device is actually plugged into it, so callers must probe
+    /// each candidate (virtio_blk.init() does, via Virtio.start()'s magic/
+    /// device-id check) rather than assuming the first one is real.
+    virtio_blk_bases: [MAX_VIRTIO_CANDIDATES]u64 = undefined,
+    virtio_blk_count: usize = 0,
 };
+
+/// QEMU virt's DTB always lists every virtio-mmio transport slot (32 by
+/// default) regardless of how many are actually populated by `-device`.
+pub const MAX_VIRTIO_CANDIDATES: usize = 32;
 
 /// Reads a big-endian u64 from the first `n` bytes of a slice
 /// (where n is 4 or 8, depending on address/size cells).
@@ -91,6 +102,19 @@ pub fn discover() ?Found {
         uart.print("devicetree: intc '");
         uart.print(m.name);
         uart.print("'\n");
+    }
+
+    var virtio_it = reg.iter(.block);
+    while (virtio_it.next() catch null) |m| {
+        if (found.virtio_blk_count >= MAX_VIRTIO_CANDIDATES) break;
+        if (m.mmio()) |r| {
+            mmu.mapExtra(r.base, r.size, .{ .writable = true, .executable = false, .user = false, .device = true });
+            found.virtio_blk_bases[found.virtio_blk_count] = r.base;
+            found.virtio_blk_count += 1;
+        }
+    }
+    if (found.virtio_blk_count > 0) {
+        uart.print("devicetree: virtio-mmio candidates found\n");
     }
 
     // Parse /memory node for physical RAM layout.

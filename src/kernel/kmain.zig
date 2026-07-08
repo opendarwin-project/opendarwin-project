@@ -6,6 +6,7 @@ const slab = @import("mm/slab.zig");
 const ipc = @import("ipc/init.zig");
 const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
+const virtio_blk = @import("drivers/virtio_blk.zig");
 const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
@@ -76,6 +77,14 @@ export fn kmain() callconv(.c) noreturn {
         uart.print("opendarwin: devicetree discovery ok\n");
     } else {
         uart.print("opendarwin: devicetree discovery unavailable, using bootstrap addresses\n");
+    }
+
+    if (dtb_found) |found| {
+        if (virtio_blk.init(found.virtio_blk_bases[0..found.virtio_blk_count])) {
+            uart.print("opendarwin: virtio-blk device ready\n");
+        } else {
+            uart.print("opendarwin: no virtio-blk device found\n");
+        }
     }
 
     gic.init();

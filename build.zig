@@ -1,6 +1,6 @@
 const std = @import("std");
 
-fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
+fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode, rootfs_path: ?[]const u8) void {
     const kernel_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
         .os_tag = .freestanding,
@@ -41,6 +41,17 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
 
     b.installArtifact(kernel_exe);
 
+    // QEMU's arm_setup_direct_kernel_boot() (hw/arm/boot.c) hardcodes
+    // "ELF images are not [Linux]" - it only inspects a loaded image for the
+    // arm64 Image boot header (ARM64_MAGIC_OFFSET check in
+    // load_aarch64_image()) when ELF loading *fails*, i.e. only for a raw
+    // binary. Since start.S embeds that header (see its module comment), the
+    // kernel must be booted as a raw binary - not the ELF - for QEMU to take
+    // the is_linux path and hand x0 = DTB pointer to real_start. Feeding it
+    // the ELF instead silently leaves x0 as whatever QEMU last left there
+    // (observed to be 0), and devicetree.zig's discovery permanently no-ops.
+    const kernel_bin = b.addObjCopy(kernel_exe.getEmittedBin(), .{ .format = .bin });
+
     const qemu_step = b.step("qemu", "Boot the kernel in qemu-system-aarch64 -M virt");
     const qemu_cmd = b.addSystemCommand(&.{
         "qemu-system-aarch64",
@@ -56,7 +67,26 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
         "-nographic",
         "-kernel",
     });
-    qemu_cmd.addArtifactArg(kernel_exe);
+    qemu_cmd.addFileArg(kernel_bin.getOutput());
+
+    // -Drootfs=<path> attaches a raw disk image as a virtio-mmio block
+    // device (see drivers/virtio_blk.zig / devicetree.zig for the kernel
+    // side). Not wired in by default since the image is host-prepared
+    // (tools/make_rootfs.sh) and embeds host-specific content.
+    if (rootfs_path) |path| {
+        qemu_cmd.addArgs(&.{
+            "-drive",
+            b.fmt("file={s},if=none,format=raw,id=rootfs", .{path}),
+            "-device",
+            "virtio-blk-device,drive=rootfs",
+            // conduit's virtio_blk driver only speaks the modern (v2)
+            // virtio-mmio protocol; QEMU virt's transports default to
+            // legacy (v1) otherwise.
+            "-global",
+            "virtio-mmio.force-legacy=false",
+        });
+    }
+
     qemu_step.dependOn(&qemu_cmd.step);
 }
 
@@ -83,7 +113,8 @@ pub fn build(b: *std.Build) void {
     // a later "WindowServer-equivalent" milestone.
     _ = b.dependency("prism", .{ .target = target, .optimize = optimize });
 
-    addKernel(b, optimize);
+    const rootfs_path = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
+    addKernel(b, optimize, rootfs_path);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`

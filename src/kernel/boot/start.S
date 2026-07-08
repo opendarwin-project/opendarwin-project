@@ -1,7 +1,32 @@
 .section .text.boot
 .global _start
 
+// ARM64 Linux "Image" boot header (Documentation/arch/arm64/booting.rst).
+// QEMU's -kernel loader inspects the loaded image (ELF or raw alike) for
+// this magic at a fixed offset from the entry point; when present it
+// switches to the "is_linux" direct-boot protocol (x0 = DTB pointer,
+// x1-x3 = 0) before jumping to the entry, instead of jumping in with
+// registers undefined. Without this header, a plain EXEC-type ELF's
+// entry point is just called with x0 left as whatever QEMU happened to
+// leave there (observed to be 0) - the DTB pointer never arrives, and
+// devicetree.zig's discovery permanently no-ops.
+//
+// code0 is a NOP (never runs when booted as a bare ELF either, since
+// execution starts at code0 = _start = the ELF entry regardless); code1
+// is the real branch, mirroring the Linux kernel's own head.S layout.
 _start:
+    nop                     // code0
+    b real_start            // code1
+    .quad 0x80000           // text_offset - KERNEL_LOAD_ADDR (0x40080000) minus QEMU virt's RAM base (0x40000000); QEMU's is_linux detection cross-checks this against the actual load offset
+    .quad __image_size      // image_size (little-endian, filled by linker.ld)
+    .quad 0                 // flags: LE kernel, placement/anywhere bits left clear
+    .quad 0                 // reserved
+    .quad 0                 // reserved
+    .quad 0                 // reserved
+    .ascii "ARM\x64"        // magic
+    .word 0                 // res5: no PE/COFF header
+
+real_start:
     // QEMU's -kernel boot protocol passes a pointer to the flattened
     // device tree in x0 (x1-x3 reserved as 0). Stash it in x20 (callee/
     // cross-call preserved throughout this file - nothing below touches

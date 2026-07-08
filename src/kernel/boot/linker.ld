@@ -40,6 +40,7 @@ SECTIONS
     __secondary_stacks_top = .;
 
     __kernel_end = .;
+    __image_size = __kernel_end - KERNEL_LOAD_ADDR;
 
     /* Reserve a fixed 2MB for kernel-only content regardless of its actual
      * size, so mm/mmu.zig's KERNEL_IMAGE_MAX_LEN can be a safe compile-time
