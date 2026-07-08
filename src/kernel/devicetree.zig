@@ -12,6 +12,7 @@
 //! it permanently. On QEMU virt these values happen to match, which is
 //! exactly what lets discovery be verified against a known-good answer.
 
+const std = @import("std");
 const conduit = @import("conduit");
 const dtree = @import("dtree");
 const mmu = @import("mm/mmu.zig");
@@ -30,7 +31,18 @@ pub const Found = struct {
     uart_base: ?u64 = null,
     gic_dist_base: ?u64 = null,
     gic_cpu_base: ?u64 = null,
+    /// Physical RAM base and size discovered from the /memory node.
+    memory_base: ?u64 = null,
+    memory_size: ?u64 = null,
 };
+
+/// Reads a big-endian u64 from the first `n` bytes of a slice
+/// (where n is 4 or 8, depending on address/size cells).
+fn readBigU64(buf: []const u8) u64 {
+    if (buf.len >= 8) return std.mem.readInt(u64, buf[0..8], .big);
+    // 4-byte cell: zero-extend to 64 bits
+    return std.mem.readInt(u32, buf[0..4], .big);
+}
 
 /// Returns null if there's no DTB pointer (dtb_phys_addr is 0) or parsing
 /// fails; callers keep using the bootstrap addresses in that case.
@@ -79,6 +91,31 @@ pub fn discover() ?Found {
         uart.print("devicetree: intc '");
         uart.print(m.name);
         uart.print("'\n");
+    }
+
+    // Parse /memory node for physical RAM layout.
+    // The 'reg' property encodes (address, size) pairs using
+    // #address-cells and #size-cells from the root node.
+    if (reader.find(&.{ "", "memory", "reg" })) |reg_bytes| {
+        const addr_cells_raw = reader.findAs(u32, &.{ "", "#address-cells" }) catch @as(u32, 2);
+        const size_cells_raw = reader.findAs(u32, &.{ "", "#size-cells" }) catch @as(u32, 1);
+        const addr_cells = addr_cells_raw;
+        const size_cells = size_cells_raw;
+        const addr_stride: usize = @as(usize, addr_cells) * 4;
+        const size_stride: usize = @as(usize, size_cells) * 4;
+        const entry_len = addr_stride + size_stride;
+
+        // Take the first memory region (most DTBs have only one).
+        if (reg_bytes.len >= entry_len) {
+            const base = readBigU64(reg_bytes[0..addr_stride]);
+            const size = readBigU64(reg_bytes[addr_stride..][0..size_stride]);
+            if (size > 0) {
+                found.memory_base = base;
+                found.memory_size = size;
+            }
+        }
+    } else |_| {
+        // No /memory node; caller will use a default.
     }
 
     return found;

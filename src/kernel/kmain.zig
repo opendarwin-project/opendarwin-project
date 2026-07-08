@@ -1,6 +1,8 @@
 const uart = @import("drivers/uart.zig");
 const exceptions = @import("arch/aarch64/exceptions.zig");
 const mmu = @import("mm/mmu.zig");
+const pmm = @import("mm/pmm.zig");
+const slab = @import("mm/slab.zig");
 const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
 const timer = @import("drivers/timer.zig");
@@ -12,6 +14,8 @@ const devicetree = @import("devicetree.zig");
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
 const pac_test_macho = @embedFile("loader/testdata/pac_test");
+
+extern var __userpages_end: u8;
 
 /// Loads a static arm64 Mach-O (see loader/testdata/*.S for how these are
 /// built) and registers it with the scheduler as a new task with its own
@@ -60,7 +64,8 @@ export fn kmain() callconv(.c) noreturn {
     // Real device discovery via conduit's Registry + dtree backend, over
     // the DTB QEMU handed us at boot - replaces the bootstrap UART/GIC
     // addresses with genuinely discovered ones where possible.
-    if (devicetree.discover()) |found| {
+    const dtb_found = devicetree.discover();
+    if (dtb_found) |found| {
         if (found.uart_base) |base| uart.init(base);
         if (found.gic_dist_base != null and found.gic_cpu_base != null) {
             gic.setBases(found.gic_dist_base.?, found.gic_cpu_base.?);
@@ -74,6 +79,40 @@ export fn kmain() callconv(.c) noreturn {
     gic.enable(timer.IRQ);
     timer.init(5); // 5ms tick - short enough to preempt mid busy-wait
     uart.print("opendarwin: timer + GIC ready\n");
+
+    // --- Physical Memory Manager ---
+    // Determine free RAM from DTB or fallback, subtract kernel reserved range.
+    const mem_base = if (dtb_found) |f| f.memory_base else null;
+    const mem_size = if (dtb_found) |f| f.memory_size else null;
+    const ram_base = mem_base orelse 0x4000_0000;
+    const ram_size = mem_size orelse 0x4800_0000 - ram_base; // 128MB QEMU virt default
+
+    const kernel_reserved_end: u64 = @intFromPtr(&__userpages_end);
+    const kernel_reserved_base: u64 = ram_base;
+    const kernel_reserved_size = kernel_reserved_end - kernel_reserved_base;
+
+    if (ram_size > kernel_reserved_size) {
+        const free_base = kernel_reserved_end;
+        const free_size = (ram_base + ram_size) - kernel_reserved_end;
+        pmm.init(&.{.{ .base = free_base, .size = free_size }});
+        uart.print("opendarwin: PMM initialized (");
+        var mb = free_size / 0x100000;
+        var mb_buf: [12]u8 = undefined;
+        var mb_i: usize = mb_buf.len;
+        while (mb > 0) {
+            mb_i -= 1;
+            mb_buf[mb_i] = '0' + @as(u8, @intCast(mb % 10));
+            mb /= 10;
+        }
+        if (mb_i == mb_buf.len) { mb_buf[mb_buf.len - 1] = '0'; mb_i = mb_buf.len - 1; }
+        uart.print(mb_buf[mb_i..]);
+        uart.print(" MB free)\n");
+    } else {
+        uart.print("opendarwin: PMM: no free memory available\n");
+    }
+
+    slab.init();
+    uart.print("opendarwin: slab allocator ready\n");
 
     // PAC groundwork: SCTLR_EL1 is per-core, so every core enables this for
     // itself (smp.zig's secondaryMain does the same for secondaries).
