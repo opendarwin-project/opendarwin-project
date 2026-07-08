@@ -1,14 +1,18 @@
 const conduit = @import("conduit");
 const SpinLock = @import("../sync/spinlock.zig");
 
-/// QEMU virt's PL011 UART MMIO base.
-const PL011_BASE: u64 = 0x0900_0000;
+/// QEMU virt's well-known PL011 UART MMIO base, used only as a bootstrap
+/// console before the DTB can be parsed (devicetree.zig then re-inits with
+/// the discovered address) - see that module's doc comment.
+pub const BOOTSTRAP_BASE: u64 = 0x0900_0000;
 
 var uart: conduit.driver.pl011.Pl011 = undefined;
 var lock: SpinLock = .{};
 
-pub fn init() void {
-    uart = conduit.driver.pl011.bind(conduit.Mmio.direct(PL011_BASE));
+pub fn init(base: u64) void {
+    lock.lock();
+    defer lock.unlock();
+    uart = conduit.driver.pl011.bind(conduit.Mmio.direct(base));
 }
 
 /// Multiple cores may print concurrently once SMP is up; the PL011 itself

@@ -40,6 +40,10 @@
             .url = "https://github.com/Midstall/prism/archive/refs/heads/master.tar.gz",
             .hash = "prism-0.1.0-PSE12OxCOACt8zlnKbz62hceLzEymLEfL5Q-Erk7eLIi",
         },
+        .dtree = .{
+            .url = "git+https://github.com/Midstall/dtree#974e557da3c6426eaf2b3284c26ff8740163d954",
+            .hash = "dtree-0.1.0-76to8JyYAABD4L0wHIrSVlX-2X-5f72L7Odt0PvXrJeu",
+        },
     },
     .paths = .{
         "build.zig",

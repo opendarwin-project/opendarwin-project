@@ -2,6 +2,14 @@
 .global _start
 
 _start:
+    // QEMU's -kernel boot protocol passes a pointer to the flattened
+    // device tree in x0 (x1-x3 reserved as 0). Stash it in x20 (callee/
+    // cross-call preserved throughout this file - nothing below touches
+    // it) before x0 gets immediately overwritten by the mpidr check; only
+    // the primary core's path actually uses it (from_el1 stores it to
+    // dtb_phys_addr for kmain.zig).
+    mov x20, x0
+
     // Core 0 boots immediately; all others park until released by
     // smp.wakeSecondaries() (see smp.zig's module doc comment for why this
     // flag+wfe/sev scheme is used instead of PSCI CPU_ON).
@@ -114,6 +122,13 @@ zero_bss:
     str xzr, [x1], #8
     b zero_bss
 zero_bss_done:
+
+    // Hand the saved DTB pointer to Zig (a single aligned scalar store -
+    // safe pre-MMU, see mmu.zig's module doc comment on why only *wide*
+    // pre-MMU accesses are the hazard).
+    adrp x1, dtb_phys_addr
+    add x1, x1, :lo12:dtb_phys_addr
+    str x20, [x1]
 
     bl kmain
 

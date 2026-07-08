@@ -7,6 +7,7 @@ const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
 const pac = @import("arch/aarch64/pac.zig");
+const devicetree = @import("devicetree.zig");
 
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
@@ -46,12 +47,28 @@ export fn kmain() callconv(.c) noreturn {
     // memory semantics before running any "normal" code is.
     mmu.enable(&mmu.kernel_regions);
 
-    uart.init();
+    // Bootstrap console at QEMU virt's well-known fixed PL011 address:
+    // there's no way to report DTB-discovery progress/errors without some
+    // UART already working (see devicetree.zig's module doc comment).
+    uart.init(uart.BOOTSTRAP_BASE);
     uart.print("opendarwin: boot ok\n");
     uart.print("opendarwin: MMU enabled\n");
 
     exceptions.init();
     uart.print("opendarwin: exception vectors installed\n");
+
+    // Real device discovery via conduit's Registry + dtree backend, over
+    // the DTB QEMU handed us at boot - replaces the bootstrap UART/GIC
+    // addresses with genuinely discovered ones where possible.
+    if (devicetree.discover()) |found| {
+        if (found.uart_base) |base| uart.init(base);
+        if (found.gic_dist_base != null and found.gic_cpu_base != null) {
+            gic.setBases(found.gic_dist_base.?, found.gic_cpu_base.?);
+        }
+        uart.print("opendarwin: devicetree discovery ok\n");
+    } else {
+        uart.print("opendarwin: devicetree discovery unavailable, using bootstrap addresses\n");
+    }
 
     gic.init();
     gic.enable(timer.IRQ);

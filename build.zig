@@ -13,12 +13,18 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
         .optimize = optimize,
     });
 
+    const dtree_dep = b.dependency("dtree", .{
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("src/kernel/kmain.zig"),
         .target = kernel_target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "conduit", .module = conduit_dep.module("conduit") },
+            .{ .name = "dtree", .module = dtree_dep.module("dtree") },
         },
     });
     kernel_mod.addIncludePath(b.path("src/kernel/arch/aarch64"));

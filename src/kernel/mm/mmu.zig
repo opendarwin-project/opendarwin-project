@@ -290,6 +290,19 @@ pub fn enableForThisCore() void {
     asm volatile ("isb");
 }
 
+/// Maps an additional identity range into kernel_root only (never inherited
+/// by per-task tables, same treatment as .userpages above) - for kernel-only
+/// data discovered at runtime after enable() already ran, e.g. the DTB
+/// blob QEMU hands the kernel at boot (see smp... no, kmain.zig's DTB
+/// handling). Safe to call any time after enable(): by then MMU is on, so
+/// this is ordinary Normal-memory code, no pre-MMU care needed.
+pub fn mapExtra(pa: u64, len: u64, prot: Prot) void {
+    const aligned_pa = pa & ~(PAGE_SIZE - 1);
+    const aligned_len = ((pa + len) - aligned_pa + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    mapRange(&kernel_root, aligned_pa, aligned_pa, aligned_len, prot);
+    switchTtbr0(&kernel_root); // flush stale TLB entries for the newly-mapped range
+}
+
 // --- Physical page allocation + per-task tables (step 6) ---
 //
 // Now that the MMU is enabled by the time any of this runs, ordinary struct
