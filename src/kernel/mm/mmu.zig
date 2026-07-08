@@ -169,8 +169,13 @@ pub const Region = extern struct { pa: u64, len: u64, prot: Prot, _pad: u64 = 0 
 // table without importing kmain, which would be a circular dependency) -
 // keep in sync if the kernel's load address or image size bound changes.
 pub const KERNEL_LOAD_ADDR: u64 = 0x4008_0000;
-pub const KERNEL_IMAGE_MAX_LEN: u64 = 8 * 1024 * 1024;
+// Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x200000;` pad
+// before .userpages - see that file's comment for why this needs to be a
+// hard boundary rather than a generous guess.
+pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0020_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
+pub const GIC_DIST_BASE: u64 = 0x0800_0000;
+pub const GIC_MMIO_LEN: u64 = 0x0002_0000; // covers both GICD and GICC windows
 
 /// Every per-task table (proc/task.zig) maps these in addition to that
 /// task's own user segments, since this milestone uses a single flat
@@ -187,7 +192,15 @@ pub const kernel_regions = [_]Region{
         .len = PAGE_SIZE,
         .prot = .{ .writable = true, .executable = false, .user = false, .device = true },
     },
+    .{
+        .pa = GIC_DIST_BASE,
+        .len = GIC_MMIO_LEN,
+        .prot = .{ .writable = true, .executable = false, .user = false, .device = true },
+    },
 };
+
+extern const __userpages_start: u8;
+extern const __userpages_end: u8;
 
 var kernel_root: Table align(PAGE_SIZE) = Table.zeroed();
 
@@ -205,6 +218,20 @@ pub fn enable(regions: []const Region) void {
     for (regions) |r| {
         mapRange(&kernel_root, r.pa, r.pa, r.len, r.prot);
     }
+
+    // .userpages (page_pool - see linker.ld and the module doc comment) is
+    // deliberately NOT part of `regions`/`kernel_regions`: it must stay out
+    // of what every per-task table inherits, but the boot-time kernel
+    // (kmain, before any task starts) still needs to write into it while
+    // kernel_root is the active TTBR0, so map it here, only into
+    // kernel_root specifically.
+    const userpages_start: u64 = @intFromPtr(&__userpages_start);
+    const userpages_end: u64 = @intFromPtr(&__userpages_end);
+    mapRange(&kernel_root, userpages_start, userpages_start, userpages_end - userpages_start, .{
+        .writable = true,
+        .executable = false,
+        .user = false,
+    });
 
     // MAIR_EL1: index 0 = Normal, Inner/Outer write-back cacheable;
     // index 1 = Device-nGnRnE.
@@ -257,8 +284,11 @@ pub fn enable(regions: []const Region) void {
 // copies are safe again (Normal memory tolerates unaligned/wide accesses),
 // so unlike the boot-time code above these don't need the same care.
 
-const MAX_BOOT_PAGES = 16;
-var page_pool: [MAX_BOOT_PAGES][PAGE_SIZE]u8 align(PAGE_SIZE) = undefined;
+const MAX_BOOT_PAGES = 64;
+// linksection(".userpages"): deliberately placed outside the range
+// kernel_regions maps as kernel-only - see linker.ld and the module doc
+// comment for why sharing that range with task-owned pages is fatal.
+var page_pool: [MAX_BOOT_PAGES][PAGE_SIZE]u8 align(PAGE_SIZE) linksection(".userpages") = undefined;
 var page_pool_used: usize = 0;
 
 /// Hands out a fresh, zeroed 4KB page and returns its physical (== virtual,

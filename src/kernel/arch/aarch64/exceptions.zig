@@ -1,6 +1,9 @@
 const uart = @import("../../drivers/uart.zig");
 const context = @import("context.zig");
 const dispatch = @import("../../syscall/dispatch.zig");
+const gic = @import("../../drivers/gic.zig");
+const timer = @import("../../drivers/timer.zig");
+const sched = @import("../../proc/sched.zig");
 
 const Frame = context.Frame;
 
@@ -97,8 +100,21 @@ export fn handleSyncException(frame: *Frame) callconv(.c) void {
 }
 
 export fn handleIrqException(frame: *Frame) callconv(.c) void {
-    dumpFrame("IRQ", frame);
-    haltForever();
+    const irq = gic.claim() orelse return; // spurious
+
+    switch (irq) {
+        timer.IRQ => {
+            timer.rearm();
+            sched.tick(frame);
+        },
+        else => {
+            uart.print("unexpected IRQ ");
+            printHex(@as(u64, irq));
+            uart.print("\n");
+        },
+    }
+
+    gic.complete(irq);
 }
 
 export fn handleFiqException(frame: *Frame) callconv(.c) void {

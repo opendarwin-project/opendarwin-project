@@ -6,6 +6,7 @@
 
 const uart = @import("../drivers/uart.zig");
 const context = @import("../arch/aarch64/context.zig");
+const sched = @import("../proc/sched.zig");
 
 const SYS_exit: u64 = 1;
 const SYS_write: u64 = 4;
@@ -45,7 +46,9 @@ fn sysExit(frame: *context.Frame) void {
     uart.print("opendarwin: task called exit(");
     printDec(frame.x[0]);
     uart.print(")\n");
-    haltForever();
+    // Hands off to the next alive task by overwriting `frame` in place
+    // (see sched.zig's module doc comment); halts only if none remain.
+    sched.exitCurrent(frame);
 }
 
 fn haltForever() noreturn {
