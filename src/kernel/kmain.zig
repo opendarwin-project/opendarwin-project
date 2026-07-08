@@ -5,6 +5,7 @@ const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
 const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
+const smp = @import("smp.zig");
 
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
@@ -55,6 +56,10 @@ export fn kmain() callconv(.c) noreturn {
     timer.init(5); // 5ms tick - short enough to preempt mid busy-wait
     uart.print("opendarwin: timer + GIC ready\n");
 
+    // Spawned before any secondary core is released: sched.spawn()'s
+    // static core-assignment (task N -> core N) needs to finish while only
+    // the primary is running, since it's otherwise unsynchronized (see
+    // sched.zig's module doc comment).
     spawnFromMachO(loop_a_macho);
     spawnFromMachO(loop_b_macho);
 
@@ -63,6 +68,9 @@ export fn kmain() callconv(.c) noreturn {
     // before this point should have been relying on interrupts anyway.
     asm volatile ("msr daifclr, #2");
 
-    uart.print("opendarwin: starting scheduler...\n");
-    sched.start();
+    uart.print("opendarwin: waking secondary cores...\n");
+    smp.wakeSecondaries();
+
+    uart.print("opendarwin: starting scheduler on core 0...\n");
+    sched.runCore(0);
 }

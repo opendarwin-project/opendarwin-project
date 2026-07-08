@@ -28,8 +28,16 @@ SECTIONS
 
     . = ALIGN(4096);
     __boot_stack_bottom = .;
-    . += 0x10000; /* 64KiB boot stack */
+    . += 0x10000; /* 64KiB boot stack - core 0 (primary) only */
     __boot_stack_top = .;
+
+    /* One 64KiB stack per secondary core (cores 1..MAX_CPUS-1; core 0 uses
+     * the boot stack above), indexed directly by MPIDR_EL1's low byte -
+     * see start.S's secondary-core path and mm/mmu.zig's MAX_CPUS. */
+    . = ALIGN(4096);
+    __secondary_stacks_bottom = .;
+    . += 0x10000 * 4;
+    __secondary_stacks_top = .;
 
     __kernel_end = .;
 

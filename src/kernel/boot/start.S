@@ -2,13 +2,56 @@
 .global _start
 
 _start:
-    // Park all secondary cores; only boot on core 0 for milestone 1.
+    // Core 0 boots immediately; all others park until released by
+    // smp.wakeSecondaries() (see smp.zig's module doc comment for why this
+    // flag+wfe/sev scheme is used instead of PSCI CPU_ON).
     mrs x0, mpidr_el1
     and x0, x0, #0xff
     cbz x0, primary_core
-park:
+
+secondary_park:
+    adrp x1, smp_wake_flag
+    add x1, x1, :lo12:smp_wake_flag
+    ldr x2, [x1]
+    cbnz x2, secondary_core
     wfe
-    b park
+    b secondary_park
+
+secondary_core:
+    // x0 still holds this core's ID (0-255) from the mpidr check above;
+    // secondary_el1_setup only touches x1/x30, so it's preserved across
+    // the call below with no need to stash it.
+    mov x9, x0
+    bl secondary_el1_setup
+
+    // Each secondary core gets its own fixed-size stack slot, indexed
+    // directly by core ID (see linker.ld's __secondary_stacks_bottom).
+    adrp x10, __secondary_stacks_bottom
+    add x10, x10, :lo12:__secondary_stacks_bottom
+    mov x1, #0x10000
+    madd x10, x9, x1, x10
+    add x10, x10, x1 // top of THIS core's slot (stacks grow down)
+    mov sp, x10
+
+    mov x0, x9 // core id -> secondaryMain's argument
+    bl secondaryMain
+
+secondary_hang:
+    wfe
+    b secondary_hang
+
+// Shared EL1-entry per-core setup (SCTLR.A clear, FP/SIMD enable) factored
+// out so both the primary and secondary paths use identical settings.
+// Only touches x1/x30 (and flags); x0 is left untouched.
+secondary_el1_setup:
+    mrs x1, sctlr_el1
+    bic x1, x1, #(1 << 1)
+    msr sctlr_el1, x1
+    mrs x1, cpacr_el1
+    orr x1, x1, #(3 << 20)
+    msr cpacr_el1, x1
+    isb
+    ret
 
 primary_core:
     // Figure out current exception level.
@@ -19,7 +62,7 @@ primary_core:
     cmp x0, #1
     b.eq from_el1
     // Unexpected EL (e.g. EL3) - not handled in milestone 1, just spin.
-    b park
+    b secondary_park
 
 from_el2:
     // Minimal EL2 setup then drop to EL1.
@@ -43,17 +86,13 @@ from_el2:
     eret
 
 from_el1:
-    // Clear SCTLR_EL1.A (strict alignment fault checking): its reset value
-    // is not guaranteed zero on this CPU model, and general-purpose code
-    // (e.g. the standard library's formatting routines) freely performs
-    // unaligned loads/stores that AArch64 otherwise tolerates.
+    // Clear SCTLR_EL1.A + enable FP/SIMD (see secondary_el1_setup above -
+    // this is the primary core's copy of the same setup; kept inline here
+    // rather than calling the shared routine so the boot stack isn't
+    // needed yet at this point).
     mrs x0, sctlr_el1
     bic x0, x0, #(1 << 1)
     msr sctlr_el1, x0
-
-    // Enable FP/SIMD access at EL1 (FPEN=0b11 in CPACR_EL1); the compiler
-    // is free to use NEON registers (e.g. to copy small structs) even in
-    // code that never explicitly touches floating point.
     mrs x0, cpacr_el1
     orr x0, x0, #(3 << 20)
     msr cpacr_el1, x0

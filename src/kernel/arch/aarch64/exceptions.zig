@@ -4,6 +4,7 @@ const dispatch = @import("../../syscall/dispatch.zig");
 const gic = @import("../../drivers/gic.zig");
 const timer = @import("../../drivers/timer.zig");
 const sched = @import("../../proc/sched.zig");
+const cpu = @import("cpu.zig");
 
 const Frame = context.Frame;
 
@@ -105,7 +106,7 @@ export fn handleIrqException(frame: *Frame) callconv(.c) void {
     switch (irq) {
         timer.IRQ => {
             timer.rearm();
-            sched.tick(frame);
+            sched.tick(cpu.coreId(), frame);
         },
         else => {
             uart.print("unexpected IRQ ");

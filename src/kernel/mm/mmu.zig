@@ -233,6 +233,18 @@ pub fn enable(regions: []const Region) void {
         .user = false,
     });
 
+    enableForThisCore();
+}
+
+/// Every AArch64 core has its own MAIR_EL1/TCR_EL1/TTBR0_EL1/SCTLR_EL1 -
+/// these are per-core system registers, not shared state. A secondary core
+/// therefore needs this same programming applied again on itself before its
+/// own accesses are Normal-memory-safe, even though `kernel_root` (the
+/// actual page table contents) was already built once by the primary core
+/// and is simply reused here, not rebuilt. Scalar-only, same as enable()'s
+/// tail and for the same reason (this runs pre-MMU-enable on whichever core
+/// calls it).
+pub fn enableForThisCore() void {
     // MAIR_EL1: index 0 = Normal, Inner/Outer write-back cacheable;
     // index 1 = Device-nGnRnE.
     const mair: u64 = (0xff << (ATTR_NORMAL_IDX * 8)) | (0x00 << (ATTR_DEVICE_IDX * 8));

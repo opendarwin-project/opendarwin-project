@@ -7,6 +7,7 @@
 const uart = @import("../drivers/uart.zig");
 const context = @import("../arch/aarch64/context.zig");
 const sched = @import("../proc/sched.zig");
+const cpu = @import("../arch/aarch64/cpu.zig");
 
 const SYS_exit: u64 = 1;
 const SYS_write: u64 = 4;
@@ -48,7 +49,7 @@ fn sysExit(frame: *context.Frame) void {
     uart.print(")\n");
     // Hands off to the next alive task by overwriting `frame` in place
     // (see sched.zig's module doc comment); halts only if none remain.
-    sched.exitCurrent(frame);
+    sched.exitCurrent(cpu.coreId(), frame);
 }
 
 fn haltForever() noreturn {

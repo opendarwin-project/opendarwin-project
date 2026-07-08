@@ -1,46 +1,69 @@
-//! Minimal round-robin scheduler. Single core for now (proc/task.zig
-//! predates SMP); `current` is a plain global rather than per-CPU state.
+//! Round-robin scheduler, SMP-aware via static per-core ownership: each
+//! spawned task is assigned to exactly one core (at spawn time, before any
+//! core besides the primary is even running), and a core's tick()/
+//! exitCurrent()/runCore() only ever look at slots *it* owns. That sidesteps
+//! needing a lock for the scheduler's own state entirely - no core ever
+//! reads or writes another core's slots, so there is no data race despite
+//! multiple cores running this same code concurrently. (Dynamic
+//! load-balancing / task migration across cores is future work; this
+//! milestone is about proving cores can safely run independent work at
+//! all.)
 //!
-//! The key trick: an exception frame (context.Frame) lives on the kernel
-//! stack at exactly the address vectors.S's RESTORE_CONTEXT will read back
-//! from before ERETing. So "context switch" is just: save the interrupted
-//! task's registers into its slot, overwrite the *same* stack frame with
-//! the next task's saved registers, and swap TTBR0 - the trampoline's
-//! existing RESTORE_CONTEXT + eret does the rest, unmodified. (The very
-//! first launch, sched.start(), is different: see task_entry.S's comment
-//! on why it can't reuse that same sp-relative macro.)
+//! The context-switch trick (overwriting an exception frame in place) is
+//! unchanged from the single-core version - see the frame-liveness comment
+//! on switchTo() below.
 
 const mmu = @import("../mm/mmu.zig");
 const context = @import("../arch/aarch64/context.zig");
 const Task = @import("task.zig").Task;
+const smp = @import("../smp.zig");
 
 const MAX_TASKS = 8;
 
 const Slot = struct {
     task: Task,
     alive: bool,
+    owner_core: u64,
 };
 
 var slots: [MAX_TASKS]Slot = undefined;
 var count: usize = 0;
-var current: usize = 0;
 
-/// Registers a new task with the scheduler. Must be called before start();
-/// there's no way to add tasks after the scheduler is running yet (no
-/// locking - single core, no reentrancy).
+/// Which slot (if any) each core is currently running. Written only by the
+/// core it indexes (core N only ever writes running[N]), so - like the rest
+/// of this file's per-core split - no lock is needed.
+var running: [smp.MAX_CPUS]?usize = [_]?usize{null} ** smp.MAX_CPUS;
+
+/// Registers a new task, statically assigned to core `count % MAX_CPUS`
+/// (i.e. the Nth spawned task goes to core N, wrapping if there are more
+/// tasks than cores). Must be called before any core (primary or
+/// secondary) starts running tasks - single-threaded at this point, so no
+/// locking is needed here either.
 pub fn spawn(user_regions: []const mmu.Region, entry: u64, stack_top: u64) void {
     if (count >= MAX_TASKS) @panic("sched: out of task slots");
-    slots[count] = .{ .task = Task.create(user_regions, entry, stack_top), .alive = true };
+    slots[count] = .{
+        .task = Task.create(user_regions, entry, stack_top),
+        .alive = true,
+        .owner_core = count % smp.MAX_CPUS,
+    };
     count += 1;
 }
 
-fn nextAlive(from: usize) ?usize {
+fn nextAliveForCore(core_id: u64, from: usize) ?usize {
     if (count == 0) return null;
     var i = from;
     var checked: usize = 0;
     while (checked < count) : (checked += 1) {
         i = (i + 1) % count;
-        if (slots[i].alive) return i;
+        if (slots[i].alive and slots[i].owner_core == core_id) return i;
+    }
+    return null;
+}
+
+fn firstAliveForCore(core_id: u64) ?usize {
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (slots[i].alive and slots[i].owner_core == core_id) return i;
     }
     return null;
 }
@@ -49,8 +72,13 @@ fn haltForever() noreturn {
     while (true) asm volatile ("wfe");
 }
 
-fn switchTo(frame: *context.Frame, idx: usize) void {
-    current = idx;
+/// A context switch is overwriting `frame` (which lives on the kernel
+/// exception stack, at exactly the address vectors.S's RESTORE_CONTEXT
+/// will read back from before ERETing) with the next task's saved
+/// registers, plus swapping TTBR0. RESTORE_CONTEXT + eret, unmodified,
+/// does the rest.
+fn switchTo(frame: *context.Frame, core_id: u64, idx: usize) void {
+    running[core_id] = idx;
     frame.* = slots[idx].task.frame;
     mmu.switchTtbr0(slots[idx].task.ttbr0);
 }
@@ -58,28 +86,32 @@ fn switchTo(frame: *context.Frame, idx: usize) void {
 /// Defined in arch/aarch64/task_entry.S.
 extern fn enterUserspace(frame: *context.Frame, ttbr0_phys: u64) noreturn;
 
-/// Starts the first registered task. Never returns.
-pub fn start() noreturn {
-    if (count == 0) @panic("sched: start() with no tasks");
-    current = 0;
-    enterUserspace(&slots[0].task.frame, @intFromPtr(slots[0].task.ttbr0));
+/// Runs this core's first owned task, or idles forever if it has none.
+/// Called once by each core (primary and secondary alike) after its own
+/// MMU/GIC/timer bring-up is done. Never returns.
+pub fn runCore(core_id: u64) noreturn {
+    const idx = firstAliveForCore(core_id) orelse haltForever();
+    running[core_id] = idx;
+    enterUserspace(&slots[idx].task.frame, @intFromPtr(slots[idx].task.ttbr0));
 }
 
 /// Timer-tick entry point (called from the IRQ handler): preempts whatever
-/// is running and hands off to the next alive task round-robin. If nothing
-/// else is alive, the current task just keeps running (no-op).
-pub fn tick(frame: *context.Frame) void {
-    if (count == 0) return;
-    slots[current].task.frame = frame.*;
-    const next = nextAlive(current) orelse return;
-    switchTo(frame, next);
+/// this core is running and hands off to the next alive task *this core
+/// owns*, round-robin. No-op if this core has only one task (or none).
+pub fn tick(core_id: u64, frame: *context.Frame) void {
+    const cur = running[core_id] orelse return;
+    slots[cur].task.frame = frame.*;
+    const next = nextAliveForCore(core_id, cur) orelse return;
+    switchTo(frame, core_id, next);
 }
 
 /// Voluntary exit (called from the `exit` syscall): marks the current task
-/// dead and hands off to the next alive one. If none remain, halts - there
-/// is nothing left to schedule and no real init/idle process yet.
-pub fn exitCurrent(frame: *context.Frame) void {
-    slots[current].alive = false;
-    const next = nextAlive(current) orelse haltForever();
-    switchTo(frame, next);
+/// dead and hands off to this core's next alive task. Halts this core if
+/// none remain - there's no cross-core work-stealing yet (see the module
+/// doc comment).
+pub fn exitCurrent(core_id: u64, frame: *context.Frame) void {
+    const cur = running[core_id] orelse haltForever();
+    slots[cur].alive = false;
+    const next = nextAliveForCore(core_id, cur) orelse haltForever();
+    switchTo(frame, core_id, next);
 }
