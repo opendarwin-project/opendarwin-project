@@ -1,5 +1,6 @@
 const uart = @import("../../drivers/uart.zig");
 const context = @import("context.zig");
+const dispatch = @import("../../syscall/dispatch.zig");
 
 const Frame = context.Frame;
 
@@ -82,11 +83,11 @@ export fn handleSyncException(frame: *Frame) callconv(.c) void {
     const ec: u6 = @truncate(frame.esr_el1 >> 26);
     switch (ec) {
         0b010101 => {
-            // SVC (AArch64). Syscall dispatch lands here in a later step;
-            // for now just prove we can tell it apart from a fault.
-            uart.print("svc caught (dispatch not wired up yet)\n");
-            dumpFrame("synchronous", frame);
-            haltForever();
+            // SVC (AArch64). elr_el1 already points at the instruction
+            // right after the svc, so simply returning here (back to
+            // sync_trampoline's RESTORE_CONTEXT + eret) resumes the task
+            // exactly where it left off.
+            dispatch.handle(frame);
         },
         else => {
             dumpFrame("synchronous", frame);

@@ -21,8 +21,10 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
             .{ .name = "conduit", .module = conduit_dep.module("conduit") },
         },
     });
+    kernel_mod.addIncludePath(b.path("src/kernel/arch/aarch64"));
     kernel_mod.addAssemblyFile(b.path("src/kernel/boot/start.S"));
     kernel_mod.addAssemblyFile(b.path("src/kernel/arch/aarch64/vectors.S"));
+    kernel_mod.addAssemblyFile(b.path("src/kernel/arch/aarch64/task_entry.S"));
 
     const kernel_exe = b.addExecutable(.{
         .name = "opendarwin-kernel",

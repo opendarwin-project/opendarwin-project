@@ -164,6 +164,31 @@ fn mapPage4K(root: *Table, va: u64, pa: u64, prot: Prot) void {
 // itself is - see mmu.zig's module doc comment for why that's fatal here.
 pub const Region = extern struct { pa: u64, len: u64, prot: Prot, _pad: u64 = 0 };
 
+// Shared physical layout constants. Duplicated from kmain.zig's boot-time
+// values on purpose (kept here too so proc/task.zig can build a per-task
+// table without importing kmain, which would be a circular dependency) -
+// keep in sync if the kernel's load address or image size bound changes.
+pub const KERNEL_LOAD_ADDR: u64 = 0x4008_0000;
+pub const KERNEL_IMAGE_MAX_LEN: u64 = 8 * 1024 * 1024;
+pub const UART_BASE: u64 = 0x0900_0000;
+
+/// Every per-task table (proc/task.zig) maps these in addition to that
+/// task's own user segments, since this milestone uses a single flat
+/// TTBR0-only address space rather than a TTBR1-backed shared kernel range
+/// (see the module doc comment above).
+pub const kernel_regions = [_]Region{
+    .{
+        .pa = KERNEL_LOAD_ADDR,
+        .len = KERNEL_IMAGE_MAX_LEN,
+        .prot = .{ .writable = true, .executable = true, .user = false },
+    },
+    .{
+        .pa = UART_BASE,
+        .len = PAGE_SIZE,
+        .prot = .{ .writable = true, .executable = false, .user = false, .device = true },
+    },
+};
+
 var kernel_root: Table align(PAGE_SIZE) = Table.zeroed();
 
 /// Builds the kernel's flat identity-mapped TTBR0_EL1 table and enables the
@@ -223,5 +248,49 @@ pub fn enable(regions: []const Region) void {
         :
         : [v] "r" (sctlr),
     );
+    asm volatile ("isb");
+}
+
+// --- Physical page allocation + per-task tables (step 6) ---
+//
+// Now that the MMU is enabled by the time any of this runs, ordinary struct
+// copies are safe again (Normal memory tolerates unaligned/wide accesses),
+// so unlike the boot-time code above these don't need the same care.
+
+const MAX_BOOT_PAGES = 16;
+var page_pool: [MAX_BOOT_PAGES][PAGE_SIZE]u8 align(PAGE_SIZE) = undefined;
+var page_pool_used: usize = 0;
+
+/// Hands out a fresh, zeroed 4KB page and returns its physical (== virtual,
+/// under this milestone's identity mapping) address. A bump allocator over a
+/// static pool, same rationale as allocTable(): mm/pmm.zig's real allocator
+/// is a later milestone.
+pub fn allocPage() u64 {
+    if (page_pool_used >= MAX_BOOT_PAGES) @panic("mmu: out of boot pages");
+    const p = &page_pool[page_pool_used];
+    page_pool_used += 1;
+    @memset(p, 0);
+    return @intFromPtr(p);
+}
+
+/// Builds a fresh page table containing the shared kernel mappings plus
+/// `user_regions`, suitable for installing into TTBR0_EL1 for one task.
+pub fn newTaskTable(user_regions: []const Region) *Table {
+    const root = allocTable();
+    for (kernel_regions) |r| mapRange(root, r.pa, r.pa, r.len, r.prot);
+    for (user_regions) |r| mapRange(root, r.pa, r.pa, r.len, r.prot);
+    return root;
+}
+
+/// Switches TTBR0_EL1 to `table` (physical address) and flushes stale TLB
+/// entries. Safe to call from Normal-memory code (i.e. after `enable()`).
+pub fn switchTtbr0(table: *Table) void {
+    asm volatile ("msr ttbr0_el1, %[v]"
+        :
+        : [v] "r" (@intFromPtr(table)),
+    );
+    asm volatile ("isb");
+    asm volatile ("tlbi vmalle1");
+    asm volatile ("dsb ish");
     asm volatile ("isb");
 }
