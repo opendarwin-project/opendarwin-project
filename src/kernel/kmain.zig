@@ -15,6 +15,7 @@ const devicetree = @import("devicetree.zig");
 const loop_a_macho = @embedFile("loader/testdata/loop_a");
 const loop_b_macho = @embedFile("loader/testdata/loop_b");
 const pac_test_macho = @embedFile("loader/testdata/pac_test");
+const hello_c_macho = @embedFile("loader/testdata/hello_c");
 
 extern var __userpages_end: u8;
 
@@ -134,6 +135,7 @@ export fn kmain() callconv(.c) noreturn {
     // static core-assignment (task N -> core N) needs to finish while only
     // the primary is running, since it's otherwise unsynchronized (see
     // sched.zig's module doc comment).
+    spawnFromMachO(hello_c_macho);
     spawnFromMachO(loop_a_macho);
     spawnFromMachO(loop_b_macho);
     spawnFromMachO(pac_test_macho); // -> core 2 (see sched.spawn()'s task-N-to-core-N assignment)
