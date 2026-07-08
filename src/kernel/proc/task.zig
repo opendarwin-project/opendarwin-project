@@ -2,6 +2,7 @@ const mmu = @import("../mm/mmu.zig");
 const context = @import("../arch/aarch64/context.zig");
 const pac = @import("../arch/aarch64/pac.zig");
 const IpcSpace = @import("../ipc/space.zig").IpcSpace;
+const Vmm = @import("../mm/vmm.zig").Vmm;
 
 var next_pac_seed: u64 = 0x5EED_5EED_5EED_5EED;
 
@@ -20,6 +21,7 @@ pub const Task = struct {
     /// hardware.
     pac_keys: pac.Keys,
     ipc_space: IpcSpace,
+    vmm: Vmm,
 
     /// Builds a task whose user address space maps `user_regions`, ready to
     /// start executing at `entry` (VA, == PA under this milestone's
@@ -40,8 +42,10 @@ pub const Task = struct {
             .frame = frame,
             .pac_keys = pac.deriveKeys(next_pac_seed),
             .ipc_space = undefined,
+            .vmm = undefined,
         };
         task.ipc_space.init();
+        task.vmm = Vmm.init(task.ttbr0);
         return task;
     }
 };

@@ -337,6 +337,12 @@ pub fn newTaskTable(user_regions: []const Region) *Table {
     return root;
 }
 
+/// Maps `len` bytes starting at `va` to `pa` into an arbitrary page table.
+/// A public wrapper around the file-private `mapRange`.
+pub fn mapPages(root: *Table, va: u64, pa: u64, len: u64, prot: Prot) void {
+    mapRange(root, va, pa, len, prot);
+}
+
 /// Switches TTBR0_EL1 to `table` (physical address) and flushes stale TLB
 /// entries. Safe to call from Normal-memory code (i.e. after `enable()`).
 pub fn switchTtbr0(table: *Table) void {

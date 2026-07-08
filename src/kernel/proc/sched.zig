@@ -16,6 +16,7 @@
 const mmu = @import("../mm/mmu.zig");
 const context = @import("../arch/aarch64/context.zig");
 const Task = @import("task.zig").Task;
+const Vmm = @import("../mm/vmm.zig").Vmm;
 const smp = @import("../smp.zig");
 const pac = @import("../arch/aarch64/pac.zig");
 
@@ -118,4 +119,9 @@ pub fn exitCurrent(core_id: u64, frame: *context.Frame) void {
     // TODO: ipc_cleanup(&slots[cur].task.ipc_space);
     const next = nextAliveForCore(core_id, cur) orelse haltForever();
     switchTo(frame, core_id, next);
+}
+
+pub fn currentVmm(core_id: u64) *Vmm {
+    const cur = running[core_id] orelse @panic("sched: no current task");
+    return &slots[cur].task.vmm;
 }
