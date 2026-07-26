@@ -17,14 +17,11 @@ const fat = @import("fs/fat.zig");
 const shared_cache = @import("loader/shared_cache.zig");
 const dyld = @import("loader/dyld.zig");
 const rootfs_manifest = @import("loader/rootfs_manifest.zig");
-
-const loop_a_macho = @embedFile("loader/testdata/loop_a");
-const loop_b_macho = @embedFile("loader/testdata/loop_b");
-const pac_test_macho = @embedFile("loader/testdata/pac_test");
-const hello_c_macho = @embedFile("loader/testdata/hello_c");
-const pie_test_macho = @embedFile("loader/testdata/pie_test");
+const kext_loader = @import("kext/loader.zig");
+const kext_registry = @import("kext/registry.zig");
 
 extern var __userpages_end: u8;
+var static_smoke_scratch: [256 * 1024]u8 align(16) = undefined;
 
 /// Loads a static arm64 Mach-O (see loader/testdata/*.S for how these are
 /// built) and registers it with the scheduler as a new task with its own
@@ -193,6 +190,15 @@ fn spawnDynamicFromFat() void {
     uart.print("opendarwin: dynamic binary loaded and spawned\n");
 }
 
+fn spawnStaticSmokeFromFat(name: []const u8) bool {
+    const n = fat.readFile(name, &static_smoke_scratch) orelse return false;
+    spawnFromMachO(static_smoke_scratch[0..n]);
+    uart.print("opendarwin: static smoke loaded: ");
+    uart.print(name);
+    uart.print("\n");
+    return true;
+}
+
 export fn kmain() callconv(.c) noreturn {
     // MMU is enabled first, before anything else, deliberately. While the
     // stage-1 MMU is disabled the architecture forces every access to be
@@ -228,13 +234,13 @@ export fn kmain() callconv(.c) noreturn {
         uart.print("opendarwin: devicetree discovery unavailable, using bootstrap addresses\n");
     }
 
-    var rootfs_mounted = false;
+    var rootfs_mounted: u8 = 0;
     if (dtb_found) |found| {
-        if (virtio_blk.init(found.virtio_blk_bases[0..found.virtio_blk_count])) {
+        if (virtio_blk.init(found.virtio_blk_matches[0..found.virtio_blk_count])) {
             uart.print("opendarwin: virtio-blk device ready\n");
             if (fat.mount(virtio_blk.block())) {
                 uart.print("opendarwin: rootfs mounted (FAT)\n");
-                rootfs_mounted = true;
+                rootfs_mounted = 1;
             } else {
                 uart.print("opendarwin: rootfs mount failed\n");
             }
@@ -297,18 +303,11 @@ export fn kmain() callconv(.c) noreturn {
         uart.print("opendarwin: PAC not available on this CPU\n");
     }
 
-    // Spawned before any secondary core is released: sched.spawn()'s
-    // static core-assignment (task N -> core N) needs to finish while only
-    // the primary is running, since it's otherwise unsynchronized (see
-    // sched.zig's module doc comment).
-    spawnFromMachO(hello_c_macho);
-    spawnFromMachO(pie_test_macho);
-    spawnFromMachO(loop_a_macho);
-    spawnFromMachO(loop_b_macho);
-    spawnFromMachO(pac_test_macho);
-
-    if (rootfs_mounted) {
-        spawnDynamicFromFat();
+    if (rootfs_mounted == 1) {
+        if (kext_loader.loadBundleFromFat("KEXTSMOK") or kext_loader.loadFromFat("KEXTSMOK")) {
+            if (virtio_blk.matchedDevice()) |m| _ = kext_registry.publishProviderInfo(2, m);
+        }
+        if (!spawnStaticSmokeFromFat("MACHSMOK")) spawnDynamicFromFat();
     }
 
     // Unmask IRQ at EL1 now that the GIC/timer/scheduler are all ready;

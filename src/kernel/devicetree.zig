@@ -17,6 +17,7 @@ const conduit = @import("conduit");
 const dtree = @import("dtree");
 const mmu = @import("mm/mmu.zig");
 const uart = @import("drivers/uart.zig");
+const provider = @import("device/provider.zig");
 
 export var dtb_phys_addr: u64 = 0;
 
@@ -34,12 +35,12 @@ pub const Found = struct {
     /// Physical RAM base and size discovered from the /memory node.
     memory_base: ?u64 = null,
     memory_size: ?u64 = null,
-    /// MMIO bases of discovered virtio-mmio nodes matching the `.block` class.
-    /// QEMU virt's DTB lists one node per virtio-mmio transport slot whether
-    /// or not a device is actually plugged into it, so callers must probe
-    /// each candidate (virtio_blk.init() does, via Virtio.start()'s magic/
-    /// device-id check) rather than assuming the first one is real.
-    virtio_blk_bases: [MAX_VIRTIO_CANDIDATES]u64 = undefined,
+    /// Compact projections of Conduit `.block` matches. QEMU virt's DTB lists
+    /// one node per virtio-mmio transport slot whether or not a device is
+    /// actually plugged into it, so callers must probe each candidate
+    /// (virtio_blk.init() does, via Virtio.start()'s magic/device-id check)
+    /// rather than assuming the first one is real.
+    virtio_blk_matches: [MAX_VIRTIO_CANDIDATES]provider.Info = undefined,
     virtio_blk_count: usize = 0,
 };
 
@@ -109,7 +110,7 @@ pub fn discover() ?Found {
         if (found.virtio_blk_count >= MAX_VIRTIO_CANDIDATES) break;
         if (m.mmio()) |r| {
             mmu.mapExtra(r.base, r.size, .{ .writable = true, .executable = false, .user = false, .device = true });
-            found.virtio_blk_bases[found.virtio_blk_count] = r.base;
+            found.virtio_blk_matches[found.virtio_blk_count] = provider.fromConduitMatch(&m);
             found.virtio_blk_count += 1;
         }
     }

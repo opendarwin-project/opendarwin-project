@@ -30,6 +30,11 @@ pub fn init(regions: []const MemoryRegion) void {
             .executable = false,
             .user = false,
         });
+        mmu.inheritExtraInTaskTables(aligned_start, aligned_end - aligned_start, .{
+            .writable = true,
+            .executable = false,
+            .user = false,
+        });
 
         // Walk backwards through pages, chaining them into the free list.
         // Walking backwards means allocPage() returns low addresses first,

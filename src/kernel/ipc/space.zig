@@ -36,7 +36,7 @@ pub const IpcSpace = struct {
             return null;
         }
         const entry = &self.is_table[free_idx];
-        self.is_table_free = entry.ie_index;
+        self.is_table_free = if (entry.ie_next) |next| @intCast((@intFromPtr(next) - @intFromPtr(self.is_table.ptr)) / @sizeOf(IpcEntry)) else self.is_table_size;
         return entry;
     }
 

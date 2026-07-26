@@ -3,6 +3,10 @@ const context = @import("../arch/aarch64/context.zig");
 const pac = @import("../arch/aarch64/pac.zig");
 const IpcSpace = @import("../ipc/space.zig").IpcSpace;
 const Vmm = @import("../mm/vmm.zig").Vmm;
+const types = @import("../ipc/types.zig");
+const tt = @import("../ipc/tt.zig");
+const IpcPort = @import("../ipc/port.zig").IpcPort;
+const ipc_right = @import("../ipc/right.zig");
 
 var next_pac_seed: u64 = 0x5EED_5EED_5EED_5EED;
 
@@ -21,6 +25,9 @@ pub const Task = struct {
     /// hardware.
     pac_keys: pac.Keys,
     ipc_space: IpcSpace,
+    task_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
+    thread_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
+    reply_port_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     vmm: Vmm,
     /// Whether SCTLR_EL1's PAC-enable bits should be on while this task
     /// runs - see pac.zig's `setEnforcement` doc comment. Defaults to true
@@ -52,5 +59,16 @@ pub const Task = struct {
         task.ipc_space.init();
         task.vmm = Vmm.init(task.ttbr0);
         return task;
+    }
+
+    pub fn initMachPorts(self: *Task) void {
+        tt.taskSelf(&self.ipc_space, @ptrCast(self), &self.task_self_name);
+        tt.threadSelf(&self.ipc_space, @ptrCast(self), &self.thread_self_name);
+
+        const port = IpcPort.alloc();
+        port.ip_receiver = &self.ipc_space;
+        const result = ipc_right.alloc(&self.ipc_space, port, types.IE_BITS_TYPE_RECEIVE);
+        self.reply_port_name = result.name;
+        port.ip_receiver_name = self.reply_port_name;
     }
 };

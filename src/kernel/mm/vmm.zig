@@ -5,12 +5,26 @@ const PAGE_SIZE = mmu.PAGE_SIZE;
 const MAX_REGIONS = 32;
 const MMAP_BASE: u64 = 0x1_0000_0000;
 
+const KERN_SUCCESS: u32 = 0;
+const KERN_NO_SPACE: u32 = 3;
+const KERN_INVALID_ARGUMENT: u32 = 4;
+const KERN_NOT_SUPPORTED: u32 = 46;
+
+const VM_PROT_WRITE: u32 = 2;
+const VM_PROT_EXECUTE: u32 = 4;
+const VM_PROT_ALL: u32 = 7;
+
+const VM_FLAGS_ANYWHERE: u32 = 1;
+const VM_FLAGS_OVERWRITE: u32 = 0x4000;
+
 const Vma = struct {
     start: u64,
     end: u64,
     prot: mmu.Prot,
     flags: u32,
 };
+
+pub const MachMapResult = struct { kr: u32, addr: u64 };
 
 pub const Vmm = struct {
     ttbr0: *mmu.Table,
@@ -30,13 +44,38 @@ pub const Vmm = struct {
         self.region_count += 1;
     }
 
+    fn addRegionChecked(self: *Vmm, start: u64, end: u64, prot: mmu.Prot, flags: u32) bool {
+        if (self.region_count >= MAX_REGIONS) return false;
+        self.regions[self.region_count] = .{ .start = start, .end = end, .prot = prot, .flags = flags };
+        self.region_count += 1;
+        return true;
+    }
+
+    fn pageRound(len: u64) ?u64 {
+        const with_slop = @addWithOverflow(len, PAGE_SIZE - 1);
+        if (with_slop[1] != 0) return null;
+        return with_slop[0] & ~(PAGE_SIZE - 1);
+    }
+
+    fn rangeOverlaps(self: *const Vmm, start: u64, len: u64) bool {
+        const end_overflow = @addWithOverflow(start, len);
+        if (end_overflow[1] != 0) return true;
+        const end = end_overflow[0];
+        for (self.regions[0..self.region_count]) |r| {
+            if (start < r.end and end > r.start) return true;
+        }
+        return false;
+    }
+
     fn findFreeRange(self: *Vmm, len: u64) u64 {
-        const aligned_len = (len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        const aligned_len = pageRound(len) orelse return 0;
         var candidate = self.next_mmap_hint;
         for (0..1024) |_| {
             var ok = true;
             for (self.regions[0..self.region_count]) |r| {
-                if (candidate < r.end and candidate + aligned_len > r.start) {
+                const end_overflow = @addWithOverflow(candidate, aligned_len);
+                if (end_overflow[1] != 0) return 0;
+                if (candidate < r.end and end_overflow[0] > r.start) {
                     candidate = r.end;
                     ok = false;
                     break;
@@ -50,9 +89,62 @@ pub const Vmm = struct {
         return 0;
     }
 
+    fn mapAnonymous(self: *Vmm, addr: u64, len: u64, prot: mmu.Prot, flags: u32) u32 {
+        if (self.region_count >= MAX_REGIONS) return KERN_NO_SPACE;
+        var mapped: u64 = 0;
+        while (mapped < len) : (mapped += PAGE_SIZE) {
+            const pa = pmm.allocPage();
+            mmu.mapPages(self.ttbr0, addr + mapped, pa, PAGE_SIZE, prot);
+        }
+        if (!self.addRegionChecked(addr, addr + len, prot, flags)) return KERN_NO_SPACE;
+        return KERN_SUCCESS;
+    }
+
+    pub fn machAllocate(self: *Vmm, requested_addr: u64, size: u64, flags: u32) MachMapResult {
+        if (size == 0) return .{ .kr = KERN_SUCCESS, .addr = 0 };
+        const user_flags = flags & 0x00ff_ffff;
+        if ((user_flags & ~VM_FLAGS_ANYWHERE) != 0) return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        const aligned_len = pageRound(size) orelse return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        var va: u64 = undefined;
+        if ((flags & VM_FLAGS_ANYWHERE) != 0) {
+            va = self.findFreeRange(aligned_len);
+            if (va == 0) return .{ .kr = KERN_NO_SPACE, .addr = requested_addr };
+        } else {
+            va = requested_addr & ~(PAGE_SIZE - 1);
+            if (va == 0 or self.rangeOverlaps(va, aligned_len)) return .{ .kr = KERN_NO_SPACE, .addr = requested_addr };
+        }
+        const prot = mmu.Prot{ .writable = true, .executable = false, .user = true };
+        return .{ .kr = self.mapAnonymous(va, aligned_len, prot, flags), .addr = va };
+    }
+
+    pub fn machMap(self: *Vmm, requested_addr: u64, size: u64, mask: u64, flags: u32, cur_protection: u32) MachMapResult {
+        if (size == 0) return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        if (mask != 0) return .{ .kr = KERN_NOT_SUPPORTED, .addr = requested_addr };
+        if ((cur_protection & ~VM_PROT_ALL) != 0) return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        const user_flags = flags & 0x00ff_ffff;
+        if ((user_flags & ~(VM_FLAGS_ANYWHERE | VM_FLAGS_OVERWRITE)) != 0) return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        if ((user_flags & VM_FLAGS_OVERWRITE) != 0) return .{ .kr = KERN_NOT_SUPPORTED, .addr = requested_addr };
+        const aligned_len = pageRound(size) orelse return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
+        var va: u64 = undefined;
+        if ((flags & VM_FLAGS_ANYWHERE) != 0) {
+            va = self.findFreeRange(aligned_len);
+            if (va == 0) return .{ .kr = KERN_NO_SPACE, .addr = requested_addr };
+        } else {
+            va = requested_addr & ~(PAGE_SIZE - 1);
+            if (va == 0 or self.rangeOverlaps(va, aligned_len)) return .{ .kr = KERN_NO_SPACE, .addr = requested_addr };
+        }
+        const prot = mmu.Prot{
+            .writable = (cur_protection & VM_PROT_WRITE) != 0,
+            .executable = (cur_protection & VM_PROT_EXECUTE) != 0,
+            .user = true,
+        };
+        return .{ .kr = self.mapAnonymous(va, aligned_len, prot, flags), .addr = va };
+    }
+
     pub fn mmap(self: *Vmm, hint: u64, len: u64, prot_val: i32, flags: i32) u64 {
-        const aligned_len = (len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        const aligned_len = pageRound(len) orelse return 0xffffffffffffffff;
         var va = if (hint != 0 and hint % PAGE_SIZE == 0) hint else 0;
+        if (va != 0 and self.rangeOverlaps(va, aligned_len)) return 0xffffffffffffffff;
         if (va == 0) {
             va = self.findFreeRange(aligned_len);
             if (va == 0) return 0xffffffffffffffff;
@@ -62,18 +154,14 @@ pub const Vmm = struct {
             .executable = (prot_val & 4) != 0,
             .user = true,
         };
-        var mapped: u64 = 0;
-        while (mapped < aligned_len) {
-            const pa = pmm.allocPage();
-            mmu.mapPages(self.ttbr0, va + mapped, pa, PAGE_SIZE, map_prot);
-            mapped += PAGE_SIZE;
-        }
-        self.addRegion(va, va + aligned_len, map_prot, @intCast(flags));
-        return va;
+        return if (self.mapAnonymous(va, aligned_len, map_prot, @intCast(flags)) == KERN_SUCCESS) va else 0xffffffffffffffff;
     }
 
     pub fn munmap(self: *Vmm, addr: u64, len: u64) i32 {
-        const end = addr + ((len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+        const aligned_len = pageRound(len) orelse return -1;
+        const end_overflow = @addWithOverflow(addr, aligned_len);
+        if (end_overflow[1] != 0) return -1;
+        const end = end_overflow[0];
         var i: usize = 0;
         while (i < self.region_count) {
             const r = &self.regions[i];
@@ -92,14 +180,16 @@ pub const Vmm = struct {
     }
 
     pub fn mprotect(self: *Vmm, addr: u64, len: u64, prot_val: i32) i32 {
-        const aligned_len = (len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        const aligned_len = pageRound(len) orelse return -1;
+        const end_overflow = @addWithOverflow(addr, aligned_len);
+        if (end_overflow[1] != 0) return -1;
         const new_prot = mmu.Prot{
             .writable = (prot_val & 2) != 0,
             .executable = (prot_val & 4) != 0,
             .user = true,
         };
         for (self.regions[0..self.region_count]) |*r| {
-            if (addr >= r.start and addr + aligned_len <= r.end) {
+            if (addr >= r.start and end_overflow[0] <= r.end) {
                 remapRange(self.ttbr0, addr, aligned_len, new_prot);
                 r.prot = new_prot;
                 return 0;
@@ -110,8 +200,8 @@ pub const Vmm = struct {
 
     pub fn brk(self: *Vmm, addr: u64) u64 {
         if (addr == 0) return self.brk_current;
-        const aligned = (addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-        const cur_aligned = (self.brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        const aligned = pageRound(addr) orelse return self.brk_current;
+        const cur_aligned = pageRound(self.brk_current) orelse return self.brk_current;
         if (aligned > cur_aligned) {
             const prot = mmu.Prot{ .writable = true, .executable = false, .user = true };
             var va = cur_aligned;
