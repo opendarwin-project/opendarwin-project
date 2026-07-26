@@ -6,25 +6,35 @@
 //! version registers and returns false for an empty slot.
 
 const conduit = @import("conduit");
+const provider = @import("../device/provider.zig");
 
 /// Module-level (not stack-local) so the struct has a stable address before
 /// `start()` programs the virtqueue into the device - the device DMAs
 /// directly into this struct's embedded descriptor/avail/used rings, and
 /// conduit's driver contract requires the value not move after that point.
 pub var device: ?conduit.driver.virtio_blk.Virtio = null;
+var matched: ?provider.Info = null;
 
-/// Try each candidate base until one probes as a real virtio-blk device.
-/// Returns true and leaves `device` populated on success.
-pub fn init(candidate_bases: []const u64) bool {
-    for (candidate_bases) |base| {
-        device = conduit.driver.virtio_blk.bind(conduit.Mmio.direct(base));
-        if (device.?.start()) return true;
+/// Try each candidate match until one probes as a real virtio-blk device.
+/// Returns true and leaves `device` and `matched` populated on success.
+pub fn init(candidate_matches: []const provider.Info) bool {
+    for (candidate_matches) |m| {
+        device = conduit.driver.virtio_blk.bind(conduit.Mmio.direct(m.mmio_base));
+        if (device.?.start()) {
+            matched = m;
+            return true;
+        }
     }
     device = null;
+    matched = null;
     return false;
 }
 
 /// The discovered disk as a generic block device, once `init` has succeeded.
 pub fn block() conduit.device.Block {
     return device.?.block();
+}
+
+pub fn matchedDevice() ?provider.Info {
+    return matched;
 }

@@ -209,6 +209,9 @@ extern const __userpages_start: u8;
 extern const __userpages_end: u8;
 
 var kernel_root: Table align(PAGE_SIZE) = Table.zeroed();
+const MAX_EXTRA_KERNEL_REGIONS = 16;
+var extra_kernel_regions: [MAX_EXTRA_KERNEL_REGIONS]Region = undefined;
+var extra_kernel_region_count: usize = 0;
 
 /// Builds the kernel's flat identity-mapped TTBR0_EL1 table and enables the
 /// stage-1 MMU. Must run with a valid kernel stack, and the caller's own
@@ -296,17 +299,22 @@ pub fn enableForThisCore() void {
     asm volatile ("isb");
 }
 
-/// Maps an additional identity range into kernel_root only (never inherited
-/// by per-task tables, same treatment as .userpages above) - for kernel-only
-/// data discovered at runtime after enable() already ran, e.g. the DTB
-/// blob QEMU hands the kernel at boot (see smp... no, kmain.zig's DTB
-/// handling). Safe to call any time after enable(): by then MMU is on, so
-/// this is ordinary Normal-memory code, no pre-MMU care needed.
+/// Maps an additional identity range into kernel_root only. Safe to call any
+/// time after enable(): by then MMU is on, so this is ordinary Normal-memory
+/// code, no pre-MMU care needed.
 pub fn mapExtra(pa: u64, len: u64, prot: Prot) void {
     const aligned_pa = pa & ~(PAGE_SIZE - 1);
     const aligned_len = ((pa + len) - aligned_pa + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     mapRange(&kernel_root, aligned_pa, aligned_pa, aligned_len, prot);
     switchTtbr0(&kernel_root); // flush stale TLB entries for the newly-mapped range
+}
+
+pub fn inheritExtraInTaskTables(pa: u64, len: u64, prot: Prot) void {
+    const aligned_pa = pa & ~(PAGE_SIZE - 1);
+    const aligned_len = ((pa + len) - aligned_pa + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    if (extra_kernel_region_count >= MAX_EXTRA_KERNEL_REGIONS) @panic("mmu: too many extra kernel regions");
+    extra_kernel_regions[extra_kernel_region_count] = .{ .pa = aligned_pa, .len = aligned_len, .prot = prot };
+    extra_kernel_region_count += 1;
 }
 
 // --- Physical page allocation + per-task tables (step 6) ---
@@ -339,6 +347,7 @@ pub fn allocPage() u64 {
 pub fn newTaskTable(user_regions: []const Region) *Table {
     const root = allocTable();
     for (kernel_regions) |r| mapRange(root, r.pa, r.pa, r.len, r.prot);
+    for (extra_kernel_regions[0..extra_kernel_region_count]) |r| mapRange(root, r.pa, r.pa, r.len, r.prot);
     for (user_regions) |r| mapRange(root, r.pa, r.pa, r.len, r.prot);
     return root;
 }

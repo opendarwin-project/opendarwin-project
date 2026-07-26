@@ -81,7 +81,7 @@ pub fn free(ptr: *anyopaque) void {
     const hdr: [*]u64 = @ptrFromInt(page_base);
     const zone_idx = hdr[0];
     const zone = &zones[zone_idx];
-    const free_ptr: *?*anyopaque = @ptrCast(ptr);
+    const free_ptr: *?*anyopaque = @ptrCast(@alignCast(ptr));
     free_ptr.* = zone.free_list;
     zone.free_list = ptr;
 }

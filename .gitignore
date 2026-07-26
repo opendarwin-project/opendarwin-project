@@ -6,3 +6,4 @@ zig-pkg/
 *.pyc
 .cache/
 /ref
+/deps

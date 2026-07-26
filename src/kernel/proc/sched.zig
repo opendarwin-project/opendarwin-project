@@ -49,6 +49,7 @@ pub fn spawn(user_regions: []const mmu.Region, entry: u64, stack_top: u64) usize
         .alive = true,
         .owner_core = idx % smp.MAX_CPUS,
     };
+    slots[idx].task.initMachPorts();
     count += 1;
     return idx;
 }
@@ -140,7 +141,11 @@ pub fn exitCurrent(core_id: u64, frame: *context.Frame) void {
     switchTo(frame, core_id, next);
 }
 
-pub fn currentVmm(core_id: u64) *Vmm {
+pub fn currentTask(core_id: u64) *Task {
     const cur = running[core_id] orelse @panic("sched: no current task");
-    return &slots[cur].task.vmm;
+    return &slots[cur].task;
+}
+
+pub fn currentVmm(core_id: u64) *Vmm {
+    return &currentTask(core_id).vmm;
 }
