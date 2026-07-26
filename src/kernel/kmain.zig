@@ -171,11 +171,16 @@ fn spawnZigSmokeFromFat() bool {
         uart.print("\n");
         return false;
     };
+    uart.print("opendarwin: libSystem slide=");
+    uart.printHex(dylib_result.slide);
+    uart.print(" MAIN slide=");
+    uart.printHex(main_result.slide);
+    uart.print("\n");
     uart.print("opendarwin: zig-smoke: spawning task\n");
 
-    // The Zig Mach-O requests a 16 MiB stack. Provide a useful portion now;
-    // stacks are fixed-size until demand-backed stack growth is implemented.
-    const stack_pages = 2048; // 8 MiB
+    // The Zig Mach-O requests a 16 MiB stack. Stacks are fixed-size until
+    // demand-backed stack growth is implemented, so provide the full request.
+    const stack_pages = 4096; // 16 MiB
     const stack_len = stack_pages * mmu.PAGE_SIZE;
     const stack_pa = mmu.allocPage();
     var extra_stack_page: usize = 1;

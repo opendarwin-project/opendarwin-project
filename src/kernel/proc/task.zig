@@ -10,12 +10,44 @@ const ipc_right = @import("../ipc/right.zig");
 
 var next_pac_seed: u64 = 0x5EED_5EED_5EED_5EED;
 
+/// Number of signals in Darwin's sigset_t (bits 1-31, signal 0 unused).
+pub const NSIG: usize = 32;
+
+pub const SIG_DFL: u64 = 0;
+pub const SIG_IGN: u64 = 1;
+pub const SIGKILL: u32 = 9;
+pub const SIGSTOP: u32 = 17;
+
+/// Darwin `sigmask(n)` — bit for signal `n` in a 32-bit sigset_t.
+pub fn sigBit(sig: u32) u32 {
+    return @as(u32, 1) << @intCast(sig - 1);
+}
+
+/// SIGKILL and SIGSTOP can never be blocked or caught.
+pub const SIGCANTMASK: u32 = sigBit(SIGKILL) | sigBit(SIGSTOP);
+
+/// Per-signal action record matching XNU's `__kern_sigaction`.
+pub const SigAction = extern struct {
+    handler: u64 = SIG_DFL, // SIG_DFL, SIG_IGN, or user function pointer
+    sa_tramp: u64 = 0, // userspace __sigtramp (per-signal, from __sigaction)
+    sa_mask: u32 = 0,
+    sa_flags: i32 = 0,
+};
+
 /// State owned by a process and shared by all of its threads.
 pub const Process = struct {
     vmm: Vmm,
     /// Registered by XNU syscall bsdthread_register (366).
     bsdthread_start: u64 = 0,
     bsdthread_wqstart: u64 = 0,
+
+    /// Per-signal actions. Index 0 is unused (signals are 1..NSIG-1).
+    sig_actions: [NSIG]SigAction = [_]SigAction{.{}} ** NSIG,
+    /// Process-wide pending set posted by kill(2).
+    sig_pending: u32 = 0,
+    /// Signals currently ignored / caught (bitmasks).
+    sig_ignore: u32 = 0,
+    sig_catch: u32 = 0,
 };
 
 /// One schedulable EL0 thread. `process` owns the address-space metadata;
@@ -40,6 +72,12 @@ pub const Task = struct {
     /// (existing behavior for every task except loader/dyld.zig's dynamic
     /// binaries, which opt out via sched.setPacEnforcement after spawning).
     pac_enforce: bool = true,
+    /// Per-thread blocked set (XNU `uu_sigmask`).
+    sig_mask: u32 = 0,
+    /// Per-thread pending set (XNU `uu_siglist`), including pthread_kill.
+    sig_pending: u32 = 0,
+    /// Mask saved across signal delivery for sigreturn.
+    sig_oldmask: u32 = 0,
 
     /// Builds a task whose user address space maps `user_regions`, ready to
     /// start executing at `entry` (VA, == PA under this milestone's

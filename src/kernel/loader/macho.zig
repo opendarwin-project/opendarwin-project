@@ -130,16 +130,20 @@ const RelocationInfo = extern struct { r_address: i32, r_word: u32 };
 const ARM_THREAD_STATE64: u32 = 6;
 const ThreadCommand = extern struct { cmd: u32, cmdsize: u32, flavor: u32, count: u32 };
 
+// Values must match mach-o/loader.h. A previous revision swapped several of
+// these (treating 0x40 as DO_REBASE_ULEB_TIMES, etc.), which desynchronized
+// the walker and corrupted DATA pointers such as `c_allocator.vtable`.
 const REBASE_OPCODE_MASK: u8 = 0xF0;
 const REBASE_IMM_MASK: u8 = 0x0F;
+const REBASE_OPCODE_DONE: u8 = 0x00;
 const REBASE_OPCODE_SET_TYPE_IMM: u8 = 0x10;
 const REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: u8 = 0x20;
 const REBASE_OPCODE_ADD_ADDR_ULEB: u8 = 0x30;
-const REBASE_OPCODE_DO_REBASE_ULEB_TIMES: u8 = 0x40;
+const REBASE_OPCODE_ADD_ADDR_IMM_SCALED: u8 = 0x40;
 const REBASE_OPCODE_DO_REBASE_IMM_TIMES: u8 = 0x50;
-const REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB: u8 = 0x60;
-const REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB: u8 = 0x70;
-const REBASE_OPCODE_DONE: u8 = 0x00;
+const REBASE_OPCODE_DO_REBASE_ULEB_TIMES: u8 = 0x60;
+const REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB: u8 = 0x70;
+const REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB: u8 = 0x80;
 
 const BIND_OPCODE_MASK: u8 = 0xF0;
 const BIND_IMM_MASK: u8 = 0x0F;
@@ -783,17 +787,19 @@ fn applyRebase(opcodes: []const u8, segs: []const SegInfo, base_pa: u64, slide: 
         const op = opcodes[idx];
         idx += 1;
         switch (op & REBASE_OPCODE_MASK) {
+            REBASE_OPCODE_DONE => return,
             REBASE_OPCODE_SET_TYPE_IMM => rebase_type = op & REBASE_IMM_MASK,
             REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB => {
                 seg_idx = op & REBASE_IMM_MASK;
                 offset = readUleb(opcodes, &idx);
             },
             REBASE_OPCODE_ADD_ADDR_ULEB => offset += readUleb(opcodes, &idx),
-            REBASE_OPCODE_DO_REBASE_ULEB_TIMES => rebaseAt(segs, base_pa, slide, min_vmaddr, seg_idx, &offset, readUleb(opcodes, &idx)),
+            REBASE_OPCODE_ADD_ADDR_IMM_SCALED => offset += @as(u64, op & REBASE_IMM_MASK) * 8,
             REBASE_OPCODE_DO_REBASE_IMM_TIMES => rebaseAt(segs, base_pa, slide, min_vmaddr, seg_idx, &offset, op & REBASE_IMM_MASK),
+            REBASE_OPCODE_DO_REBASE_ULEB_TIMES => rebaseAt(segs, base_pa, slide, min_vmaddr, seg_idx, &offset, readUleb(opcodes, &idx)),
             REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB => {
                 rebaseOne(segs, base_pa, slide, min_vmaddr, seg_idx, offset, rebase_type);
-                offset += readUleb(opcodes, &idx);
+                offset += 8 + readUleb(opcodes, &idx);
             },
             REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB => {
                 const count = readUleb(opcodes, &idx);
@@ -801,10 +807,9 @@ fn applyRebase(opcodes: []const u8, segs: []const SegInfo, base_pa: u64, slide: 
                 var j: u64 = 0;
                 while (j < count) : (j += 1) {
                     rebaseOne(segs, base_pa, slide, min_vmaddr, seg_idx, offset, rebase_type);
-                    offset += skip;
+                    offset += 8 + skip;
                 }
             },
-            REBASE_OPCODE_DONE => return,
             else => return,
         }
     }
@@ -812,6 +817,7 @@ fn applyRebase(opcodes: []const u8, segs: []const SegInfo, base_pa: u64, slide: 
 
 fn rebaseOne(segs: []const SegInfo, base_pa: u64, slide: u64, min_vmaddr: u64, seg_idx: usize, off: u64, rebase_type: u8) void {
     _ = rebase_type;
+    if (seg_idx >= segs.len or off + 8 > segs[seg_idx].vmsize) return;
     const seg = segs[seg_idx];
     const ptr: *align(1) u64 = @ptrFromInt(base_pa + (seg.vmaddr - min_vmaddr) + off);
     ptr.* +%= slide;
@@ -820,9 +826,7 @@ fn rebaseOne(segs: []const SegInfo, base_pa: u64, slide: u64, min_vmaddr: u64, s
 fn rebaseAt(segs: []const SegInfo, base_pa: u64, slide: u64, min_vmaddr: u64, seg_idx: usize, off: *u64, count: u64) void {
     var j: u64 = 0;
     while (j < count) : (j += 1) {
-        const seg = segs[seg_idx];
-        const ptr: *align(1) u64 = @ptrFromInt(base_pa + (seg.vmaddr - min_vmaddr) + off.*);
-        ptr.* +%= slide;
+        rebaseOne(segs, base_pa, slide, min_vmaddr, seg_idx, off.*, 0);
         off.* += 8;
     }
 }

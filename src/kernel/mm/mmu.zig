@@ -265,16 +265,23 @@ pub fn enableForThisCore() void {
     // TCR_EL1: 4KB granule, 48-bit VA (T0SZ=16) on TTBR0; TTBR1 walks
     // disabled entirely (EPD1=1) since this milestone doesn't use it.
     // Field layout (ARM ARM): T0SZ[5:0] EPD0[7] IRGN0[9:8] ORGN0[11:10]
-    // SH0[13:12] TG0[15:14] T1SZ[21:16] A1[22] EPD1[23].
+    // SH0[13:12] TG0[15:14] T1SZ[21:16] A1[22] EPD1[23] ... TBI0[37].
+    //
+    // TBI0 matches Darwin/XNU: ignore VA[63:56] on TTBR0 walks. aarch64-macos
+    // userspace (Zig/LLVM) freely parks PAC residue / ptrauth / software tags
+    // in that top byte; without TBI0 those addresses take a translation-fault
+    // L0 (seen under -Doptimize=ReleaseFast on FAR 0xc0…… preferred VAs).
     const t0sz: u64 = 16;
     const EPD1: u64 = 1 << 23;
+    const TBI0: u64 = 1 << 37;
     const tcr: u64 =
         t0sz | // T0SZ
         (0b01 << 8) | // IRGN0 = WBWA
         (0b01 << 10) | // ORGN0 = WBWA
         (0b11 << 12) | // SH0 = inner shareable
         (0b00 << 14) | // TG0 = 4KB
-        EPD1;
+        EPD1 |
+        TBI0;
     asm volatile ("msr tcr_el1, %[v]"
         :
         : [v] "r" (tcr),
