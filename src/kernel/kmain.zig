@@ -152,6 +152,10 @@ fn spawnZigSmokeFromFat() bool {
     const symbol_count = @min(dylib_result.external_symbols.len, symbol_storage.len);
     for (dylib_result.external_symbols[0..symbol_count], 0..) |sym, i| symbol_storage[i] = sym;
     var resolver_ctx = FossResolverCtx{ .symbols = symbol_storage[0..symbol_count] };
+    const return_entry = resolveFossSymbol(&resolver_ctx, 0, "opendarwin_user_return") orelse {
+        uart.print("opendarwin: FOSS libSystem lacks return trampoline\n");
+        return false;
+    };
 
     var main_regions: [8]mmu.Region = undefined;
     var main_regions_used: usize = 0;
@@ -169,7 +173,13 @@ fn spawnZigSmokeFromFat() bool {
     };
     uart.print("opendarwin: zig-smoke: spawning task\n");
 
+    // The Zig Mach-O requests a 16 MiB stack. Provide a useful portion now;
+    // stacks are fixed-size until demand-backed stack growth is implemented.
+    const stack_pages = 2048; // 8 MiB
+    const stack_len = stack_pages * mmu.PAGE_SIZE;
     const stack_pa = mmu.allocPage();
+    var extra_stack_page: usize = 1;
+    while (extra_stack_page < stack_pages) : (extra_stack_page += 1) _ = mmu.allocPage();
     var task_regions: [9]mmu.Region = undefined;
     if (main_regions_used + 1 > task_regions.len) {
         uart.print("opendarwin: zig-smoke: too many main regions\n");
@@ -178,11 +188,11 @@ fn spawnZigSmokeFromFat() bool {
     for (main_regions[0..main_regions_used], 0..) |r, idx| task_regions[idx] = r;
     task_regions[main_regions_used] = .{
         .pa = stack_pa,
-        .len = mmu.PAGE_SIZE,
+        .len = stack_len,
         .prot = .{ .writable = true, .executable = false, .user = true },
     };
 
-    const idx = sched.spawn(task_regions[0 .. main_regions_used + 1], main_result.entry, stack_pa + mmu.PAGE_SIZE);
+    const idx = sched.spawn(task_regions[0 .. main_regions_used + 1], main_result.entry, stack_pa + stack_len);
     sched.setPacEnforcement(idx, false);
     // The Zig-generated LC_MAIN entry is C main(argc, argv, envp), rather
     // than a raw stack-entry crt1 routine.  Give it properly terminated
@@ -198,6 +208,7 @@ fn spawnZigSmokeFromFat() bool {
     sched.setInitialRegister(idx, 1, stack_pa);
     sched.setInitialRegister(idx, 2, stack_pa + 16);
     sched.setInitialRegister(idx, 3, stack_pa + 16);
+    sched.setInitialRegister(idx, 30, return_entry);
     const table = sched.taskTable(idx);
     for (dylib_regions[0..dylib_regions_used]) |r| {
         mmu.mapPages(table, r.pa, r.pa, r.len, r.prot);

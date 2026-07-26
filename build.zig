@@ -198,7 +198,7 @@ fn addZigDarwinSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode, libsyste
     });
 
     const smoke_mod = b.createModule(.{
-        .root_source_file = b.path("src/userland/zig_smoke.zig"),
+        .root_source_file = b.path("src/userland/threads.zig"),
         .target = smoke_target,
         .optimize = optimize,
         .link_libc = false,
@@ -208,7 +208,6 @@ fn addZigDarwinSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode, libsyste
         .name = "zig-smoke",
         .root_module = smoke_mod,
     });
-    smoke.entry = .{ .symbol_name = "_zig_smoke_entry" };
     smoke_mod.linkLibrary(libsystem);
 
     const install = b.addInstallArtifact(smoke, .{
@@ -239,9 +238,7 @@ fn addZigSmokeRootfs(b: *std.Build) void {
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{
-        .preferred_optimize_mode = .ReleaseSafe,
-    });
+    const optimize = b.standardOptimizeOption(.{});
 
     _ = b.dependency("prism", .{ .target = target, .optimize = optimize });
 

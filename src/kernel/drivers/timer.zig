@@ -6,6 +6,8 @@
 pub const IRQ: u32 = 30;
 
 var ticks_per_period: u64 = 0;
+var period_ms_current: u64 = 0;
+var monotonic_ms: u64 = 0;
 
 /// Starts the timer with a period of `period_ms` milliseconds, firing IRQ
 /// 30 each time it expires. Must be called after gic.enable(IRQ).
@@ -14,6 +16,7 @@ pub fn init(period_ms: u64) void {
         : [v] "=r" (-> u64),
     );
     ticks_per_period = (freq * period_ms) / 1000;
+    period_ms_current = period_ms;
     rearm();
     // CNTP_CTL_EL0: bit0 ENABLE=1, bit1 IMASK=0 (don't mask at the timer
     // itself - masking happens via DAIF/GIC as usual), bit2 ISTATUS is
@@ -31,4 +34,14 @@ pub fn rearm() void {
         :
         : [v] "r" (ticks_per_period),
     );
+}
+
+/// Account for one delivered periodic tick. Called from the IRQ handler before
+/// scheduler wakeups inspect deadlines.
+pub fn accountTick() void {
+    monotonic_ms +%= period_ms_current;
+}
+
+pub fn nowMs() u64 {
+    return monotonic_ms;
 }
