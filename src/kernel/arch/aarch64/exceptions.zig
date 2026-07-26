@@ -4,6 +4,7 @@ const dispatch = @import("../../syscall/dispatch.zig");
 const gic = @import("../../drivers/gic.zig");
 const timer = @import("../../drivers/timer.zig");
 const sched = @import("../../proc/sched.zig");
+const signal = @import("../../proc/signal.zig");
 const cpu = @import("cpu.zig");
 
 const Frame = context.Frame;
@@ -96,8 +97,10 @@ export fn handleSyncException(frame: *Frame) callconv(.c) void {
             // SVC (AArch64). elr_el1 already points at the instruction
             // right after the svc, so simply returning here (back to
             // sync_trampoline's RESTORE_CONTEXT + eret) resumes the task
-            // exactly where it left off.
+            // exactly where it left off — unless a pending signal redirects
+            // the frame to __sigtramp first.
             dispatch.handle(frame);
+            signal.deliverCurrent(cpu.coreId(), frame);
         },
         else => {
             dumpFrame("synchronous", frame);
@@ -123,6 +126,7 @@ export fn handleIrqException(frame: *Frame) callconv(.c) void {
     }
 
     gic.complete(irq);
+    signal.deliverCurrent(cpu.coreId(), frame);
 }
 
 export fn handleFiqException(frame: *Frame) callconv(.c) void {

@@ -49,14 +49,25 @@ const MACH_mach_vm_map_trap: usize = 15;
 const KERN_SUCCESS: usize = 0;
 
 const SYS_exit: usize = 1;
+const SYS_read: usize = 3;
 const SYS_write: usize = 4;
-const SYS_nanosleep: usize = 240;
+const SYS_close: usize = 6;
+const SYS_getpid: usize = 20;
+const SYS_kill: usize = 37;
+const SYS_socket: usize = 97;
+const SYS_socketpair: usize = 135;
+const SYS_getsockname: usize = 150;
+const SYS___semwait_signal: usize = 334;
+const SYS_pthread_kill: usize = 328;
 const SYS_bsdthread_create: usize = 360;
 const SYS_bsdthread_terminate: usize = 361;
 const SYS_bsdthread_register: usize = 366;
 const SYS_thread_selfid: usize = 372;
 const SYS_ulock_wake: usize = 516;
 const SYS_ulock_wait2: usize = 544;
+const SYS_sigaction: usize = 46;
+const SYS_sigprocmask: usize = 48;
+const SYS_sigreturn: usize = 184;
 
 fn darwinSyscall3(number: usize, arg0: usize, arg1: usize, arg2: usize) usize {
     return asm volatile (
@@ -67,7 +78,7 @@ fn darwinSyscall3(number: usize, arg0: usize, arg1: usize, arg2: usize) usize {
           [arg0] "{x0}" (arg0),
           [arg1] "{x1}" (arg1),
           [arg2] "{x2}" (arg2),
-    );
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
 }
 
 fn darwinSyscall5(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) usize {
@@ -81,7 +92,22 @@ fn darwinSyscall5(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: us
           [arg2] "{x2}" (arg2),
           [arg3] "{x3}" (arg3),
           [arg4] "{x4}" (arg4),
-    );
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
+}
+
+fn darwinSyscall6(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) usize {
+    return asm volatile (
+        \\mov x16, %[number]
+        \\svc #0x80
+        : [ret] "={x0}" (-> usize),
+        : [number] "r" (number),
+          [arg0] "{x0}" (arg0),
+          [arg1] "{x1}" (arg1),
+          [arg2] "{x2}" (arg2),
+          [arg3] "{x3}" (arg3),
+          [arg4] "{x4}" (arg4),
+          [arg5] "{x5}" (arg5),
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
 }
 
 fn machTrap0(number: usize) usize {
@@ -90,7 +116,7 @@ fn machTrap0(number: usize) usize {
         \\svc #0x81
         : [ret] "={x0}" (-> usize),
         : [number] "r" (number),
-    );
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
 }
 
 fn machTrap5(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) usize {
@@ -104,7 +130,7 @@ fn machTrap5(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, 
           [arg2] "{x2}" (arg2),
           [arg3] "{x3}" (arg3),
           [arg4] "{x4}" (arg4),
-    );
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
 }
 
 fn machTrap6(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) usize {
@@ -119,7 +145,7 @@ fn machTrap6(number: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize, 
           [arg3] "{x3}" (arg3),
           [arg4] "{x4}" (arg4),
           [arg5] "{x5}" (arg5),
-    );
+        : .{ .x1 = true, .x2 = true, .x3 = true, .x4 = true, .x5 = true, .x6 = true, .x7 = true, .x8 = true, .x9 = true, .x10 = true, .x11 = true, .x12 = true, .x13 = true, .x14 = true, .x15 = true, .x16 = true, .x17 = true, .memory = true });
 }
 
 fn setErrnoFromNegative(ret: usize) c_int {
@@ -416,16 +442,147 @@ pub export fn _dyld_image_path_containing_address(addr: ?*const anyopaque) ?[*:0
     if (p >= MAIN_IMAGE_BASE and p < MAIN_IMAGE_LIMIT) return "/MAIN\x00";
     return "/usr/lib/libSystem.B.dylib\x00";
 }
-pub export fn __tlv_bootstrap(desc: *TlvDescriptor) ?*anyopaque {
-    const saved_x8 = asm volatile ("mov %[out], x8"
-        : [out] "=r" (-> usize),
+const MAX_TLV_RECORDS = 16;
+const MAX_TLV_THREADS = 64;
+const TLV_BLOCK_SIZE = 1024 * 1024;
+
+const TlvRecord = struct {
+    template_base: usize = 0,
+    storage: [MAX_TLV_THREADS]?[*]u8 = [_]?[*]u8{null} ** MAX_TLV_THREADS,
+};
+
+var tlv_records: [MAX_TLV_RECORDS]TlvRecord = [_]TlvRecord{.{}} ** MAX_TLV_RECORDS;
+var tlv_record_count: usize = 0;
+
+fn currentTlvThreadIndex() usize {
+    const tid = darwinSyscall3(SYS_thread_selfid, 0, 0, 0);
+    if (tid == 0) return 0;
+    return @min(tid - 1, MAX_TLV_THREADS - 1);
+}
+
+fn findOrCreateTlvRecord(template_base: usize) *TlvRecord {
+    var i: usize = 0;
+    while (i < tlv_record_count) : (i += 1) {
+        if (tlv_records[i].template_base == template_base) return &tlv_records[i];
+    }
+    if (tlv_record_count >= MAX_TLV_RECORDS) return &tlv_records[MAX_TLV_RECORDS - 1];
+    const rec = &tlv_records[tlv_record_count];
+    rec.* = .{ .template_base = template_base };
+    tlv_record_count += 1;
+    return rec;
+}
+
+fn tlvStorageFor(record: *TlvRecord) ?[*]u8 {
+    const idx = currentTlvThreadIndex();
+    if (record.storage[idx]) |storage| return storage;
+    const mapped = mmap(null, TLV_BLOCK_SIZE, VM_PROT_READ_WRITE, MAP_PRIVATE_ANON, -1, 0);
+    if (mapped == null or @intFromPtr(mapped.?) == usize_max) {
+        reportStub("tlv mmap failed");
+        return null;
+    }
+    const storage: [*]u8 = @ptrCast(mapped.?);
+    record.storage[idx] = storage;
+    return storage;
+}
+
+fn isTlvRecordKey(key: usize) bool {
+    const start = @intFromPtr(&tlv_records);
+    const end = start + @sizeOf(@TypeOf(tlv_records));
+    return key >= start and key < end and ((key - start) % @sizeOf(TlvRecord)) == 0;
+}
+
+/// Darwin's TLV thunk ABI is *not* the normal AAPCS one: the compiler emits a
+/// bare `blr` through the descriptor's thunk slot inline, in the middle of a
+/// function, and assumes the callee clobbers **nothing except x0** (which
+/// carries the descriptor in and the resolved address out). A plain Zig
+/// function violates that immediately by using caller-saved GPRs/NEON as
+/// scratch, silently corrupting the caller's live values - that is what was
+/// destroying the `*Threaded` argument in Zig's worker threads, and under
+/// `-Doptimize=ReleaseFast` the denser register allocation also kept live
+/// values in x19-x28 / q8-q31 across TLV sites (including `std.debug.print`
+/// → threadlocal panic state), which the previous x1-x18/q0-q7-only spill
+/// missed and left `Io.Threaded.allocator.vtable` pointing at garbage.
+///
+/// So the exported symbol is a naked trampoline that spills every register
+/// the Darwin TLV contract requires before delegating to the Zig impl.
+pub export fn __tlv_bootstrap() callconv(.naked) void {
+    asm volatile (
+        \\stp x29, x30, [sp, #-16]!
+        \\mov x29, sp
+        \\stp x1, x2, [sp, #-16]!
+        \\stp x3, x4, [sp, #-16]!
+        \\stp x5, x6, [sp, #-16]!
+        \\stp x7, x8, [sp, #-16]!
+        \\stp x9, x10, [sp, #-16]!
+        \\stp x11, x12, [sp, #-16]!
+        \\stp x13, x14, [sp, #-16]!
+        \\stp x15, x16, [sp, #-16]!
+        \\stp x17, x18, [sp, #-16]!
+        \\stp x19, x20, [sp, #-16]!
+        \\stp x21, x22, [sp, #-16]!
+        \\stp x23, x24, [sp, #-16]!
+        \\stp x25, x26, [sp, #-16]!
+        \\stp x27, x28, [sp, #-16]!
+        \\stp q0, q1, [sp, #-32]!
+        \\stp q2, q3, [sp, #-32]!
+        \\stp q4, q5, [sp, #-32]!
+        \\stp q6, q7, [sp, #-32]!
+        \\stp q8, q9, [sp, #-32]!
+        \\stp q10, q11, [sp, #-32]!
+        \\stp q12, q13, [sp, #-32]!
+        \\stp q14, q15, [sp, #-32]!
+        \\stp q16, q17, [sp, #-32]!
+        \\stp q18, q19, [sp, #-32]!
+        \\stp q20, q21, [sp, #-32]!
+        \\stp q22, q23, [sp, #-32]!
+        \\stp q24, q25, [sp, #-32]!
+        \\stp q26, q27, [sp, #-32]!
+        \\stp q28, q29, [sp, #-32]!
+        \\stp q30, q31, [sp, #-32]!
+        \\bl %[impl]
+        \\ldp q30, q31, [sp], #32
+        \\ldp q28, q29, [sp], #32
+        \\ldp q26, q27, [sp], #32
+        \\ldp q24, q25, [sp], #32
+        \\ldp q22, q23, [sp], #32
+        \\ldp q20, q21, [sp], #32
+        \\ldp q18, q19, [sp], #32
+        \\ldp q16, q17, [sp], #32
+        \\ldp q14, q15, [sp], #32
+        \\ldp q12, q13, [sp], #32
+        \\ldp q10, q11, [sp], #32
+        \\ldp q8, q9, [sp], #32
+        \\ldp q6, q7, [sp], #32
+        \\ldp q4, q5, [sp], #32
+        \\ldp q2, q3, [sp], #32
+        \\ldp q0, q1, [sp], #32
+        \\ldp x27, x28, [sp], #16
+        \\ldp x25, x26, [sp], #16
+        \\ldp x23, x24, [sp], #16
+        \\ldp x21, x22, [sp], #16
+        \\ldp x19, x20, [sp], #16
+        \\ldp x17, x18, [sp], #16
+        \\ldp x15, x16, [sp], #16
+        \\ldp x13, x14, [sp], #16
+        \\ldp x11, x12, [sp], #16
+        \\ldp x9, x10, [sp], #16
+        \\ldp x7, x8, [sp], #16
+        \\ldp x5, x6, [sp], #16
+        \\ldp x3, x4, [sp], #16
+        \\ldp x1, x2, [sp], #16
+        \\ldp x29, x30, [sp], #16
+        \\ret
+        :
+        : [impl] "X" (&tlvBootstrapImpl),
     );
+}
+
+fn tlvBootstrapImpl(desc: *TlvDescriptor) callconv(.c) ?*anyopaque {
     // Darwin TLV descriptors live in __DATA,__thread_vars and point into the
-    // following __thread_{data,bss} template by offset. The milestone loader
-    // maps those sections directly, so use the image-local template block as
-    // this process's single-thread TLS block rather than a libSystem-global
-    // scratch area; otherwise TLVs from MAIN and libSystem alias each other.
-    if (desc.key == 0) {
+    // following __thread_{data,bss} template by offset. Keep one TLV block per
+    // kernel thread so Zig's Thread.current, panic_stage, and signal-stack TLVs
+    // are not shared between pthreads.
+    if (desc.key == 0 or !isTlvRecordKey(desc.key)) {
         const this_addr = @intFromPtr(desc);
         const thunk = desc.thunk;
         var start = this_addr;
@@ -443,14 +600,11 @@ pub export fn __tlv_bootstrap(desc: *TlvDescriptor) ?*anyopaque {
             end += 24;
             if (end - start > 4096) break;
         }
-        desc.key = end;
+        desc.key = @intFromPtr(findOrCreateTlvRecord(end));
     }
-    const result: ?*anyopaque = @ptrFromInt(desc.key + desc.offset);
-    asm volatile ("mov x8, %[in]"
-        :
-        : [in] "r" (saved_x8),
-    );
-    return result;
+    const record: *TlvRecord = @ptrFromInt(desc.key);
+    const storage = tlvStorageFor(record) orelse return null;
+    return @ptrFromInt(@intFromPtr(storage) + desc.offset);
 }
 pub export fn sys_icache_invalidate(_: ?*anyopaque, _: usize) void {
     reportStub("sys_icache_invalidate");
@@ -462,14 +616,16 @@ pub export fn open(_: [*:0]const u8, _: c_int, _: c_int) c_int {
 pub export fn openat(_: c_int, _: [*:0]const u8, _: c_int, _: c_int) c_int {
     return stubErr("openat");
 }
-pub export fn close(_: c_int) c_int {
-    return stubErr("close");
+pub export fn close(fd: c_int) c_int {
+    const ret = darwinSyscall3(SYS_close, @intCast(fd), 0, 0);
+    return @intCast(setErrnoFromNegative(ret));
 }
-pub export fn @"close$NOCANCEL"(_: c_int) c_int {
-    return stubErr("close$NOCANCEL");
+pub export fn @"close$NOCANCEL"(fd: c_int) c_int {
+    return close(fd);
 }
-pub export fn read(_: c_int, _: [*]u8, _: usize) isize {
-    return @intCast(stubErr("read"));
+pub export fn read(fd: c_int, buf: [*]u8, len: usize) isize {
+    const ret = darwinSyscall3(SYS_read, @intCast(fd), @intFromPtr(buf), len);
+    return @intCast(setErrnoFromNegative(ret));
 }
 const Iovec = extern struct {
     base: [*]const u8,
@@ -515,8 +671,18 @@ pub export fn pwritev(_: c_int, _: ?*const anyopaque, _: c_int, _: i64) isize {
 pub export fn lseek(_: c_int, _: i64, _: c_int) i64 {
     return @intCast(stubErr("lseek"));
 }
-pub export fn fcntl(_: c_int, _: c_int, _: usize) c_int {
-    return stubErr("fcntl");
+pub export fn fcntl(_: c_int, cmd: c_int, _: usize) c_int {
+    reportStub("fcntl");
+    return switch (cmd) {
+        1 => 0, // F_GETFD
+        2 => 0, // F_SETFD
+        3 => 0, // F_GETFL
+        4 => 0, // F_SETFL
+        else => blk: {
+            errno = EINVAL;
+            break :blk -1;
+        },
+    };
 }
 pub export fn ioctl(_: c_int, _: usize, _: usize) c_int {
     return stubErr("ioctl");
@@ -606,24 +772,62 @@ pub export fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd:
 pub export fn munmap(_: ?*anyopaque, _: usize) c_int {
     return 0;
 }
-pub export fn clock_gettime(_: c_int, _: ?*anyopaque) c_int {
-    return stubErr("clock_gettime");
-}
-pub export fn clock_getres(_: c_int, _: ?*anyopaque) c_int {
-    return stubErr("clock_getres");
-}
-pub export fn nanosleep(req: ?*const anyopaque, rem: ?*anyopaque) c_int {
-    const ret = darwinSyscall3(SYS_nanosleep, @intFromPtr(req orelse {
+const LibcTimespec = extern struct {
+    tv_sec: isize,
+    tv_nsec: isize,
+};
+
+var clock_ms: usize = 0;
+
+pub export fn clock_gettime(_: c_int, tp: ?*anyopaque) c_int {
+    const out = tp orelse {
         errno = EINVAL;
         return -1;
-    }), @intFromPtr(rem orelse null), 0);
+    };
+    // Until wall-clock syscalls are exposed, provide a monotonic coarse clock
+    // that advances on observation. `nanosleep` itself is kernel-timer backed.
+    clock_ms +%= 5;
+    const ts = @as(*LibcTimespec, @ptrCast(@alignCast(out)));
+    ts.tv_sec = @intCast(clock_ms / 1000);
+    ts.tv_nsec = @intCast((clock_ms % 1000) * 1_000_000);
+    return 0;
+}
+pub export fn clock_getres(_: c_int, tp: ?*anyopaque) c_int {
+    if (tp) |out| {
+        const ts = @as(*LibcTimespec, @ptrCast(@alignCast(out)));
+        ts.tv_sec = 0;
+        ts.tv_nsec = 5_000_000;
+    }
+    return 0;
+}
+/// Darwin has no dedicated nanosleep syscall; libc's nanosleep() is built
+/// on top of __semwait_signal(cond_sem=0, mutex_sem=0, timeout=1,
+/// relative=1, tv_sec, tv_nsec).
+pub export fn nanosleep(req: ?*const anyopaque, rem: ?*anyopaque) c_int {
+    _ = rem;
+    const p = req orelse {
+        errno = EINVAL;
+        return -1;
+    };
+    const ts = @as(*const LibcTimespec, @ptrCast(@alignCast(p))).*;
+    const ret = darwinSyscall6(
+        SYS___semwait_signal,
+        0,
+        0,
+        1,
+        1,
+        @bitCast(@as(i64, @intCast(ts.tv_sec))),
+        @bitCast(@as(i64, @intCast(ts.tv_nsec))),
+    );
     return @intCast(setErrnoFromNegative(ret));
 }
 pub export fn getpid() c_int {
-    return stubErr("getpid");
+    const ret = darwinSyscall3(SYS_getpid, 0, 0, 0);
+    return @intCast(setErrnoFromNegative(ret));
 }
-pub export fn kill(_: c_int, _: c_int) c_int {
-    return stubErr("kill");
+pub export fn kill(pid: c_int, sig: c_int) c_int {
+    const ret = darwinSyscall3(SYS_kill, @intCast(pid), @intCast(sig), 0);
+    return @intCast(setErrnoFromNegative(ret));
 }
 pub export fn fork() c_int {
     return stubErr("fork");
@@ -650,50 +854,159 @@ pub export fn sigemptyset(set: ?*anyopaque) c_int {
     if (set) |p| @as(*u32, @ptrCast(@alignCast(p))).* = 0;
     return 0;
 }
+
 const SignalAltStack = extern struct {
     sp: ?*anyopaque,
     size: usize,
     flags: c_int,
 };
-const MAX_SIGNALS = 32;
-const SIGACTION_BYTES = 16;
-var installed_alt_stack: SignalAltStack = .{ .sp = null, .size = 0, .flags = 0 };
-var installed_actions: [MAX_SIGNALS][SIGACTION_BYTES]u8 = [_][SIGACTION_BYTES]u8{[_]u8{0} ** SIGACTION_BYTES} ** MAX_SIGNALS;
 
-/// Record user-installed handlers until kernel signal delivery is available.
-/// This makes std.start's Darwin sigaction setup observable and preserves the
-/// ABI's old-action copy-out behavior without falsely discarding state.
+var installed_alt_stack: SignalAltStack = .{ .sp = null, .size = 0, .flags = 0 };
+
+/// User-facing sigaction struct (no trampoline) — what Zig's std.start passes.
+/// Layout: handler(8) + mask(4) + flags(4) = 16 bytes on aarch64.
+const UserSigaction = extern struct {
+    handler: usize, // union { sa_handler, sa_sigaction }
+    sa_mask: u32,
+    sa_flags: i32,
+};
+
+/// Kernel-facing __sigaction struct (with trampoline) — what syscall 46 expects.
+/// Layout: handler(8) + tramp(8) + mask(4) + flags(4) = 24 bytes on aarch64.
+const KernelSigaction = extern struct {
+    handler: usize,
+    sa_tramp: usize,
+    sa_mask: u32,
+    sa_flags: i32,
+};
+
+const SIGKILL: c_int = 9;
+const SIGSTOP: c_int = 17;
+const NSIG: c_int = 32;
+const SA_SIGINFO: i32 = 0x0040;
+const SA_ONSTACK: i32 = 0x0001;
+const SA_RESTART: i32 = 0x0002;
+const SA_RESETHAND: i32 = 0x0004;
+const SA_NOCLDSTOP: i32 = 0x0008;
+const SA_NODEFER: i32 = 0x0010;
+const SA_NOCLDWAIT: i32 = 0x0020;
+const SIG_BLOCK: c_int = 1;
+const SIG_UNBLOCK: c_int = 2;
+const SIG_SETMASK: c_int = 3;
+const UC_TRAD: c_int = 1;
+const UC_FLAVOR: c_int = 30;
+
+const SaHandler = *const fn (c_int) callconv(.c) void;
+const SaSigaction = *const fn (c_int, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+
+/// XNU arm64 signal trampoline. The kernel enters here with:
+///   x0=handler, x1=infostyle, x2=sig, x3=siginfo*, x4=ucontext*, x5=token
+/// After the user handler returns, we restore via sigreturn(2).
+pub export fn __sigtramp(
+    handler: usize,
+    style: c_int,
+    sig: c_int,
+    sinfo: ?*anyopaque,
+    uctx: ?*anyopaque,
+    token: usize,
+) callconv(.c) void {
+    if (style == UC_FLAVOR) {
+        const fn_ptr: SaSigaction = @ptrFromInt(handler);
+        fn_ptr(sig, sinfo, uctx);
+    } else {
+        const fn_ptr: SaHandler = @ptrFromInt(handler);
+        fn_ptr(sig);
+    }
+    _ = darwinSyscall3(SYS_sigreturn, @intFromPtr(uctx), @intCast(style), token);
+    // sigreturn restores the interrupted context and does not return.
+    while (true) {}
+}
+
+/// Forward sigaction to the kernel (syscall 46), matching XNU's ABI.
+///
+/// The kernel's `sigaction` syscall expects:
+///   - signum: signal number
+///   - nsa:    pointer to `__user64_sigaction` (24 bytes, includes sa_tramp)
+///   - osa:    pointer to `user64_sigaction` (16 bytes, no sa_tramp)
+///
+/// This libc wrapper converts between the public `struct sigaction` (16 bytes,
+/// no trampoline) and the kernel's `__sigaction` (24 bytes, with trampoline).
 pub export fn sigaction(sig: c_int, act: ?*const anyopaque, oldact: ?*anyopaque) c_int {
-    if (sig <= 0 or sig >= MAX_SIGNALS) {
+    if (sig <= 0 or sig >= NSIG) {
         errno = EINVAL;
         return -1;
     }
-    const slot = &installed_actions[@intCast(sig)];
-    if (oldact) |out| @memcpy(@as([*]u8, @ptrCast(out))[0..SIGACTION_BYTES], slot);
-    if (act) |input| @memcpy(slot, @as([*]const u8, @ptrCast(input))[0..SIGACTION_BYTES]);
+    // SIGKILL and SIGSTOP cannot be caught — kernel rejects them too.
+    if (sig == SIGKILL or sig == SIGSTOP) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    // Build the kernel-facing struct (24 bytes) from the user-facing struct.
+    var kern_act: KernelSigaction = undefined;
+    if (act) |input| {
+        const user_sa: *const UserSigaction = @ptrCast(@alignCast(input));
+        kern_act = .{
+            .handler = user_sa.handler,
+            .sa_tramp = @intFromPtr(&__sigtramp),
+            .sa_mask = user_sa.sa_mask,
+            .sa_flags = user_sa.sa_flags,
+        };
+    }
+
+    // Allocate space for the kernel's old-action copy-out (16 bytes, no tramp).
+    var kernel_oldact: UserSigaction = undefined;
+
+    const nsa_ptr: usize = if (act != null) @intFromPtr(&kern_act) else 0;
+    const osa_ptr: usize = if (oldact != null) @intFromPtr(&kernel_oldact) else 0;
+
+    // syscall 46: sigaction(signum, nsa, osa)
+    const ret = darwinSyscall3(SYS_sigaction, @intCast(sig), nsa_ptr, osa_ptr);
+    const err = setErrnoFromNegative(ret);
+    if (err != 0) return -1;
+
+    // Copy the kernel's 16-byte old action back to the caller.
+    if (oldact) |out| {
+        @as([*]u8, @ptrCast(out))[0..@sizeOf(UserSigaction)].* = @as([*]const u8, @ptrCast(&kernel_oldact))[0..@sizeOf(UserSigaction)].*;
+    }
+
     return 0;
 }
 
-/// Retain the Darwin stack_t configured by Zig's hosted startup. Delivery is
-/// still kernel work, but later calls now see the installed alternate stack.
+pub export fn sigprocmask(how: c_int, set: ?*const anyopaque, oldset: ?*anyopaque) c_int {
+    if (how != SIG_BLOCK and how != SIG_UNBLOCK and how != SIG_SETMASK) {
+        errno = EINVAL;
+        return -1;
+    }
+    const ret = darwinSyscall3(
+        SYS_sigprocmask,
+        @intCast(how),
+        if (set) |p| @intFromPtr(p) else 0,
+        if (oldset) |p| @intFromPtr(p) else 0,
+    );
+    return @intCast(setErrnoFromNegative(ret));
+}
+
+/// Record the alternate signal stack configured by Zig's hosted startup.
+/// The kernel handles actual alternate-stack delivery; this API stores
+/// the configuration so that later sigaltstack() queries return the
+/// installed stack.
 pub export fn sigaltstack(ss: ?*const anyopaque, old_ss: ?*anyopaque) c_int {
     if (old_ss) |out| @as(*SignalAltStack, @ptrCast(@alignCast(out))).* = installed_alt_stack;
     if (ss) |input| {
         const next = @as(*const SignalAltStack, @ptrCast(@alignCast(input))).*;
-        if (next.sp == null and next.size != 0) {
-            errno = EINVAL;
-            return -1;
-        }
         installed_alt_stack = next;
     }
     return 0;
 }
 
-pub export fn socket(_: c_int, _: c_int, _: c_int) c_int {
-    return stubErr("socket");
+pub export fn socket(domain: c_int, typ: c_int, protocol: c_int) c_int {
+    const ret = darwinSyscall3(SYS_socket, @intCast(domain), @intCast(typ), @intCast(protocol));
+    return @intCast(setErrnoFromNegative(ret));
 }
-pub export fn socketpair(_: c_int, _: c_int, _: c_int, _: *[2]c_int) c_int {
-    return stubErr("socketpair");
+pub export fn socketpair(domain: c_int, typ: c_int, protocol: c_int, sv: *[2]c_int) c_int {
+    const ret = darwinSyscall5(SYS_socketpair, @intCast(domain), @intCast(typ), @intCast(protocol), @intFromPtr(sv), 0);
+    return @intCast(setErrnoFromNegative(ret));
 }
 pub export fn connect(_: c_int, _: ?*const anyopaque, _: u32) c_int {
     return stubErr("connect");
@@ -713,8 +1026,9 @@ pub export fn shutdown(_: c_int, _: c_int) c_int {
 pub export fn setsockopt(_: c_int, _: c_int, _: c_int, _: ?*const anyopaque, _: u32) c_int {
     return stubErr("setsockopt");
 }
-pub export fn getsockname(_: c_int, _: ?*anyopaque, _: ?*u32) c_int {
-    return stubErr("getsockname");
+pub export fn getsockname(fd: c_int, addr: ?*anyopaque, len: ?*u32) c_int {
+    const ret = darwinSyscall3(SYS_getsockname, @intCast(fd), @intFromPtr(addr orelse null), @intFromPtr(len orelse null));
+    return @intCast(setErrnoFromNegative(ret));
 }
 pub export fn recvmsg(_: c_int, _: ?*anyopaque, _: c_int) isize {
     return @intCast(stubErr("recvmsg"));
@@ -758,7 +1072,7 @@ pub export fn sysctlbyname(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: ?*us
 }
 
 const MAX_PTHREADS = 4;
-const PTHREAD_STACK_SIZE = 8 * 1024 * 1024;
+const PTHREAD_STACK_SIZE = 16 * 1024 * 1024;
 const MAP_PRIVATE_ANON: c_int = 0x1002;
 const VM_PROT_READ_WRITE: c_int = 3;
 const ENOMEM: c_int = 12;
@@ -806,8 +1120,10 @@ pub export fn pthread_threadid_np(thread: ?*anyopaque, out: *u64) c_int {
 pub export fn pthread_equal(a: usize, b: usize) c_int {
     return if (a == b) 1 else 0;
 }
-pub export fn pthread_kill(_: ?*anyopaque, _: c_int) c_int {
-    return 0;
+pub export fn pthread_kill(thread: ?*anyopaque, sig: c_int) c_int {
+    const tid = if (thread) |p| @as(*const Pthread, @ptrCast(@alignCast(p))).id else currentThreadId();
+    const ret = darwinSyscall3(SYS_pthread_kill, @intCast(tid), @intCast(sig), 0);
+    return @intCast(setErrnoFromNegative(ret));
 }
 pub export fn pthread_create(out: ?*usize, _: ?*const anyopaque, start: ?*const anyopaque, arg: ?*anyopaque) c_int {
     const start_addr = @intFromPtr(start orelse return EINVAL);
@@ -850,12 +1166,15 @@ pub export fn pthread_attr_setguardsize(_: ?*anyopaque, _: usize) c_int {
     return 0;
 }
 pub export fn __ulock_wait2(operation: u32, addr: ?*anyopaque, value: u64, timeout: u64, value2: u64) c_int {
-    const ret = darwinSyscall5(SYS_ulock_wait2, operation, @intFromPtr(addr orelse return EINVAL), value, timeout, value2);
-    return setErrnoFromNegative(ret);
+    const p = addr orelse return -EINVAL;
+    const ret = darwinSyscall5(SYS_ulock_wait2, operation, @intFromPtr(p), value, timeout, value2);
+    if (ret == usize_max - 34) return 0; // -EAGAIN: value changed before sleeping
+    return @intCast(@as(isize, @bitCast(ret)));
 }
 pub export fn __ulock_wake(operation: u32, addr: ?*anyopaque, wake_value: u64) c_int {
-    const ret = darwinSyscall3(SYS_ulock_wake, operation, @intFromPtr(addr orelse return EINVAL), wake_value);
-    return setErrnoFromNegative(ret);
+    const p = addr orelse return -EINVAL;
+    const ret = darwinSyscall3(SYS_ulock_wake, operation, @intFromPtr(p), wake_value);
+    return @intCast(@as(isize, @bitCast(ret)));
 }
 pub export fn fchmod(_: c_int, _: c_int) c_int {
     return stubErr("fchmod");

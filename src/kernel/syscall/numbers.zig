@@ -4,17 +4,27 @@ pub const SYS_read: u16 = 3;
 pub const SYS_write: u16 = 4;
 pub const SYS_open: u16 = 5;
 pub const SYS_close: u16 = 6;
+pub const SYS_getpid: u16 = 20;
+pub const SYS_kill: u16 = 37;
+pub const SYS_sigaction: u16 = 46;
+pub const SYS_sigprocmask: u16 = 48;
+pub const SYS_sigreturn: u16 = 184;
 pub const SYS_fstat: u16 = 62;
+pub const SYS_socket: u16 = 97;
+pub const SYS_getsockname: u16 = 150;
 pub const SYS_munmap: u16 = 73;
 pub const SYS_mprotect: u16 = 74;
-pub const SYS_nanosleep: u16 = 240;
 pub const SYS_mmap: u16 = 197;
+pub const SYS_socketpair: u16 = 135;
 
 // XNU BSD pthread ABI: bsd/kern/syscalls.master.
+pub const SYS_pthread_kill: u16 = 328;
+pub const SYS___semwait_signal: u16 = 334;
 pub const SYS_bsdthread_create: u16 = 360;
 pub const SYS_bsdthread_terminate: u16 = 361;
 pub const SYS_bsdthread_register: u16 = 366;
 pub const SYS_thread_selfid: u16 = 372;
+pub const SYS___semwait_signal_nocancel: u16 = 423;
 
 // Darwin ulock ABI. __ulock_wait2 is the modern five-argument variant
 // used by Zig's std.Io synchronization primitives.

@@ -2,7 +2,7 @@
 .global enterUserspace
 
 // enterUserspace(frame: *context.Frame, ttbr0_phys: u64) noreturn
-//   x0 = pointer to a saved Frame (x0..x30, sp_el0, elr_el1, spsr_el1, ...)
+//   x0 = pointer to a saved Frame (GPRs + FPSIMD)
 //   x1 = physical address of the task's TTBR0 table
 //
 // Installs the task's address space, then restores its register frame and
@@ -11,7 +11,7 @@
 // Deliberately does NOT use context_macros.S's RESTORE_CONTEXT (sp-relative
 // loads): `frame` here is an arbitrary kernel global (a Task's saved
 // state), not a location on the real kernel stack, and RESTORE_CONTEXT's
-// trailing `add sp, sp, #288` would permanently leave SP_EL1 (the shared
+// trailing `add sp, sp, #800` would permanently leave SP_EL1 (the shared
 // kernel exception stack every future exception saves into) pointing into
 // scheduler state instead of a real stack - silent corruption the moment
 // the next exception fires. Every load below is relative to x0 (the frame
@@ -22,6 +22,24 @@ enterUserspace:
     tlbi vmalle1
     dsb ish
     isb
+
+    // FPSIMD first while x0 still holds the frame base.
+    ldp q0, q1, [x0, #288]
+    ldp q2, q3, [x0, #320]
+    ldp q4, q5, [x0, #352]
+    ldp q6, q7, [x0, #384]
+    ldp q8, q9, [x0, #416]
+    ldp q10, q11, [x0, #448]
+    ldp q12, q13, [x0, #480]
+    ldp q14, q15, [x0, #512]
+    ldp q16, q17, [x0, #544]
+    ldp q18, q19, [x0, #576]
+    ldp q20, q21, [x0, #608]
+    ldp q22, q23, [x0, #640]
+    ldp q24, q25, [x0, #672]
+    ldp q26, q27, [x0, #704]
+    ldp q28, q29, [x0, #736]
+    ldp q30, q31, [x0, #768]
 
     ldp x2, x3, [x0, #248]    // sp_el0, elr_el1
     msr sp_el0, x2
