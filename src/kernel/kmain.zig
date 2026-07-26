@@ -97,7 +97,119 @@ fn resolveSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
 }
 
 const MAX_MAPPED_SEGMENTS = 32;
+const MAX_FOSS_DYLIB_SYMBOLS = 256;
+const MAX_FOSS_BLOB = 2 * 1024 * 1024;
 const ExtraMap = struct { va: u64, pa: u64, len: u64, prot: mmu.Prot };
+const FossResolverCtx = struct { symbols: []const macho.Symbol };
+
+fn resolveFossSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
+    _ = ordinal;
+    const rc: *const FossResolverCtx = @ptrCast(@alignCast(ctx.?));
+    for (rc.symbols) |sym| {
+        if (sym.kind != .external) continue;
+        if (std.mem.eql(u8, sym.name, name) or
+            (sym.name.len == name.len + 1 and sym.name[0] == '_' and std.mem.eql(u8, sym.name[1..], name))) return sym.value;
+    }
+    uart.print("opendarwin: unresolved FOSS dylib symbol: ");
+    uart.print(name);
+    uart.print("\n");
+    return null;
+}
+
+fn readFatFileIntoPages(name: []const u8, max_len: u64) ?[]const u8 {
+    const mapped_len = pageAlign(max_len);
+    const pages = mapped_len / mmu.PAGE_SIZE;
+    const pa = pmm.allocPagesContig(pages);
+    const buf: [*]u8 = @ptrFromInt(pa);
+    const n = fat.readFile(name, buf[0..max_len]) orelse return null;
+    return buf[0..n];
+}
+
+fn spawnZigSmokeFromFat() bool {
+    uart.print("opendarwin: zig-smoke: reading libSystem\n");
+    const dylib_bytes = readFatFileIntoPages("usr/lib/libSystem.B.dylib", MAX_FOSS_BLOB) orelse return false;
+    uart.print("opendarwin: zig-smoke: reading MAIN\n");
+    const main_bytes = readFatFileIntoPages("MAIN", MAX_FOSS_BLOB) orelse return false;
+    uart.print("opendarwin: zig-smoke: loading libSystem\n");
+
+    var dylib_regions: [8]mmu.Region = undefined;
+    var dylib_regions_used: usize = 0;
+    const dylib_result = macho.load(dylib_bytes, &dylib_regions, &dylib_regions_used, null, null) catch |err| {
+        uart.print("opendarwin: FOSS libSystem load failed: ");
+        uart.print(@errorName(err));
+        const unresolved = macho.lastUnresolvedSymbol();
+        if (unresolved.len != 0) {
+            uart.print(" (");
+            uart.print(unresolved);
+            uart.print(")");
+        }
+        uart.print("\n");
+        return false;
+    };
+    uart.print("opendarwin: zig-smoke: loading MAIN\n");
+
+    var symbol_storage: [MAX_FOSS_DYLIB_SYMBOLS]macho.Symbol = undefined;
+    const symbol_count = @min(dylib_result.external_symbols.len, symbol_storage.len);
+    for (dylib_result.external_symbols[0..symbol_count], 0..) |sym, i| symbol_storage[i] = sym;
+    var resolver_ctx = FossResolverCtx{ .symbols = symbol_storage[0..symbol_count] };
+
+    var main_regions: [8]mmu.Region = undefined;
+    var main_regions_used: usize = 0;
+    const main_result = macho.load(main_bytes, &main_regions, &main_regions_used, resolveFossSymbol, &resolver_ctx) catch |err| {
+        uart.print("opendarwin: zig-smoke load failed: ");
+        uart.print(@errorName(err));
+        const unresolved = macho.lastUnresolvedSymbol();
+        if (unresolved.len != 0) {
+            uart.print(" (");
+            uart.print(unresolved);
+            uart.print(")");
+        }
+        uart.print("\n");
+        return false;
+    };
+    uart.print("opendarwin: zig-smoke: spawning task\n");
+
+    const stack_pa = mmu.allocPage();
+    var task_regions: [9]mmu.Region = undefined;
+    if (main_regions_used + 1 > task_regions.len) {
+        uart.print("opendarwin: zig-smoke: too many main regions\n");
+        return false;
+    }
+    for (main_regions[0..main_regions_used], 0..) |r, idx| task_regions[idx] = r;
+    task_regions[main_regions_used] = .{
+        .pa = stack_pa,
+        .len = mmu.PAGE_SIZE,
+        .prot = .{ .writable = true, .executable = false, .user = true },
+    };
+
+    const idx = sched.spawn(task_regions[0 .. main_regions_used + 1], main_result.entry, stack_pa + mmu.PAGE_SIZE);
+    sched.setPacEnforcement(idx, false);
+    // The Zig-generated LC_MAIN entry is C main(argc, argv, envp), rather
+    // than a raw stack-entry crt1 routine.  Give it properly terminated
+    // argv and envp vectors in the mapped initial stack page.
+    const startup: [*]u64 = @ptrFromInt(stack_pa);
+    const argv0 = stack_pa + 32;
+    startup[0] = argv0; // argv[0]
+    startup[1] = 0; // argv terminator
+    startup[2] = 0; // envp terminator
+    const argv0_bytes: [*]u8 = @ptrFromInt(argv0);
+    @memcpy(argv0_bytes[0..10], "zig-smoke\x00");
+    sched.setInitialRegister(idx, 0, 1);
+    sched.setInitialRegister(idx, 1, stack_pa);
+    sched.setInitialRegister(idx, 2, stack_pa + 16);
+    sched.setInitialRegister(idx, 3, stack_pa + 16);
+    const table = sched.taskTable(idx);
+    for (dylib_regions[0..dylib_regions_used]) |r| {
+        mmu.mapPages(table, r.pa, r.pa, r.len, r.prot);
+        mmu.mapPages(table, r.pa -% dylib_result.slide, r.pa, r.len, r.prot);
+    }
+    for (main_regions[0..main_regions_used]) |r| {
+        mmu.mapPages(table, r.pa -% main_result.slide, r.pa, r.len, r.prot);
+    }
+
+    uart.print("opendarwin: zig-smoke + FOSS libSystem loaded and spawned\n");
+    return true;
+}
 
 /// Loads a dynamically-linked binary (e.g. /bin/sh) plus the sparse real
 /// shared-cache dylib slices it needs off the FAT rootfs - see
@@ -287,6 +399,7 @@ export fn kmain() callconv(.c) noreturn {
     } else {
         uart.print("opendarwin: PMM: no free memory available\n");
     }
+    var user_spawned = false;
 
     slab.init();
     uart.print("opendarwin: slab allocator ready\n");
@@ -307,7 +420,8 @@ export fn kmain() callconv(.c) noreturn {
         if (kext_loader.loadBundleFromFat("KEXTSMOK") or kext_loader.loadFromFat("KEXTSMOK")) {
             if (virtio_blk.matchedDevice()) |m| _ = kext_registry.publishProviderInfo(2, m);
         }
-        if (!spawnStaticSmokeFromFat("MACHSMOK")) spawnDynamicFromFat();
+        user_spawned = spawnZigSmokeFromFat();
+        if (!user_spawned and !spawnStaticSmokeFromFat("MACHSMOK")) spawnDynamicFromFat();
     }
 
     // Unmask IRQ at EL1 now that the GIC/timer/scheduler are all ready;

@@ -69,6 +69,11 @@ pub fn setPacEnforcement(idx: usize, enforce: bool) void {
     slots[idx].task.pac_enforce = enforce;
 }
 
+pub fn setInitialRegister(idx: usize, reg: usize, value: u64) void {
+    if (idx >= count or reg >= slots[idx].task.frame.x.len) return;
+    slots[idx].task.frame.x[reg] = value;
+}
+
 fn nextAliveForCore(core_id: u64, from: usize) ?usize {
     if (count == 0) return null;
     var i = from;

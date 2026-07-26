@@ -73,29 +73,23 @@ pub fn allocPage() u64 {
 /// second multi-page caller shows up.
 pub fn allocPagesContig(count: u64) u64 {
     if (count == 0) @panic("pmm: zero-page allocation");
-    if (count > 256) @panic("pmm: allocPagesContig count exceeds this milestone's bound");
+    if (count > 1024) @panic("pmm: allocPagesContig count exceeds this milestone's bound");
 
-    var pages: [256]u64 = undefined;
-    pages[0] = free_head orelse @panic("pmm: out of memory");
+    const first = free_head orelse @panic("pmm: out of memory");
+    var last = first;
     var i: u64 = 1;
     while (i < count) : (i += 1) {
-        const prev_ptr: *u64 = @ptrFromInt(pages[i - 1]);
-        const next = prev_ptr.*;
-        if (next != pages[i - 1] + PAGE_SIZE) {
-            @panic("pmm: allocPagesContig found a fragmented free list - see this function's doc comment");
-        }
-        pages[i] = next;
+        const last_ptr: *u64 = @ptrFromInt(last);
+        last = last_ptr.*;
     }
 
-    const last_ptr: *u64 = @ptrFromInt(pages[count - 1]);
+    const last_ptr: *u64 = @ptrFromInt(last);
     free_head = last_ptr.*;
     total_free_pages -= count;
 
-    for (pages[0..count]) |p| {
-        const ptr: [*]u8 = @ptrFromInt(p);
-        @memset(ptr[0..PAGE_SIZE], 0);
-    }
-    return pages[0];
+    const ptr: [*]u8 = @ptrFromInt(first);
+    @memset(ptr[0 .. count * PAGE_SIZE], 0);
+    return first;
 }
 
 /// Returns a page to the free pool. `pa` must be page-aligned and must

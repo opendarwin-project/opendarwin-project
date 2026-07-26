@@ -158,6 +158,85 @@ fn addDarwinWindowSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode) void 
     run_step.dependOn(&run.step);
 }
 
+fn addMinimalLibSystem(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const libsystem_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+        .abi = .none,
+    });
+
+    const libsystem_mod = b.createModule(.{
+        .root_source_file = b.path("src/libsystem/libsystem.zig"),
+        .target = libsystem_target,
+        .optimize = optimize,
+        .link_libc = false,
+    });
+
+    const libsystem = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "System",
+        .root_module = libsystem_mod,
+    });
+    libsystem.install_name = "/usr/lib/libSystem.B.dylib";
+
+    const install = b.addInstallArtifact(libsystem, .{
+        .dest_dir = .{ .override = .{ .custom = "lib" } },
+        .dest_sub_path = "libSystem.B.dylib",
+    });
+    b.getInstallStep().dependOn(&install.step);
+
+    const step = b.step("libsystem", "Build the minimal FOSS libSystem.B.dylib for aarch64-macos");
+    step.dependOn(&install.step);
+    return libsystem;
+}
+
+fn addZigDarwinSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode, libsystem: *std.Build.Step.Compile) *std.Build.Step.Compile {
+    const smoke_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+        .abi = .none,
+    });
+
+    const smoke_mod = b.createModule(.{
+        .root_source_file = b.path("src/userland/zig_smoke.zig"),
+        .target = smoke_target,
+        .optimize = optimize,
+        .link_libc = false,
+    });
+
+    const smoke = b.addExecutable(.{
+        .name = "zig-smoke",
+        .root_module = smoke_mod,
+    });
+    smoke.entry = .{ .symbol_name = "_zig_smoke_entry" };
+    smoke_mod.linkLibrary(libsystem);
+
+    const install = b.addInstallArtifact(smoke, .{
+        .dest_dir = .{ .override = .{ .custom = "userland" } },
+    });
+    b.getInstallStep().dependOn(&install.step);
+
+    const step = b.step("zig-smoke", "Build a tiny aarch64-macos Zig executable linked to minimal libSystem");
+    step.dependOn(&install.step);
+    return smoke;
+}
+
+fn addZigSmokeRootfs(b: *std.Build) void {
+    const make_img = b.addSystemCommand(&.{
+        "python3",
+        "tools/make_fat32.py",
+        "zig-out/zig-smoke-rootfs.img",
+        "--multi",
+        "usr/lib/libSystem.B.dylib=zig-out/lib/libSystem.B.dylib",
+        "bin/zig-smoke=zig-out/userland/zig-smoke",
+        "MAIN=zig-out/userland/zig-smoke",
+    });
+    make_img.step.dependOn(b.getInstallStep());
+
+    const step = b.step("zig-smoke-rootfs", "Build a FAT32 QEMU rootfs containing zig-smoke and minimal libSystem");
+    step.dependOn(&make_img.step);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
@@ -170,4 +249,7 @@ pub fn build(b: *std.Build) void {
     addKernel(b, optimize, rootfs_path);
     addPrepareSharedCacheTool(b, optimize);
     addDarwinWindowSmoke(b, optimize);
+    const libsystem = addMinimalLibSystem(b, optimize);
+    _ = addZigDarwinSmoke(b, optimize, libsystem);
+    addZigSmokeRootfs(b);
 }
