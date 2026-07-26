@@ -8,6 +8,7 @@ const ipc = @import("ipc/init.zig");
 const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
 const virtio_blk = @import("drivers/virtio_blk.zig");
+const virtio_gpu = @import("drivers/virtio_gpu.zig");
 const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
@@ -19,6 +20,8 @@ const dyld = @import("loader/dyld.zig");
 const rootfs_manifest = @import("loader/rootfs_manifest.zig");
 const kext_loader = @import("kext/loader.zig");
 const kext_registry = @import("kext/registry.zig");
+const iokit_root = @import("iokit/root.zig");
+const iokit_compat = @import("iokit/compat.zig");
 
 extern var __userpages_end: u8;
 var static_smoke_scratch: [256 * 1024]u8 align(16) = undefined;
@@ -375,8 +378,19 @@ export fn kmain() callconv(.c) noreturn {
         } else {
             uart.print("opendarwin: no virtio-blk device found\n");
         }
-    }
 
+        // GPU candidates are published into the IOKit registry after rootfs
+        // is up; VirtioGpuFramebuffer binds them (no DISPLAY kext).
+        virtio_gpu.stashCandidates(
+            found.virtio_gpu_matches[0..found.virtio_gpu_count],
+            found.pci_ecam_base,
+        );
+        if (found.virtio_gpu_count > 0) {
+            uart.print("opendarwin: virtio-gpu candidates stashed for IOKit\n");
+        } else {
+            uart.print("opendarwin: no virtio-gpu candidates\n");
+        }
+    }
     gic.init();
     gic.enable(timer.IRQ);
     timer.init(5); // 5ms tick - short enough to preempt mid busy-wait
@@ -432,9 +446,21 @@ export fn kmain() callconv(.c) noreturn {
         uart.print("opendarwin: PAC not available on this CPU\n");
     }
 
+    // Display bind via IOKit (VirtioGpuFramebuffer on IOPCIDevice nubs).
+    // No longer depends on a FAT-loaded DISPLAY kext.
+    iokit_compat.linkForce();
+    iokit_root.init();
+    const ecam = virtio_gpu.stashedEcam();
+    _ = iokit_root.publishDisplayCandidates(virtio_gpu.stashedCandidates(), ecam);
+    _ = iokit_root.matchAndStartDrivers();
+    if (virtio_gpu.stashedCandidates().len > 0 and !virtio_gpu.ready()) {
+        uart.print("opendarwin: no virtio-gpu device found\n");
+    }
+
     if (rootfs_mounted == 1) {
+        // Optional block smoke kext (does not own storage).
         if (kext_loader.loadBundleFromFat("KEXTSMOK") or kext_loader.loadFromFat("KEXTSMOK")) {
-            if (virtio_blk.matchedDevice()) |m| _ = kext_registry.publishProviderInfo(2, m);
+            if (virtio_blk.matchedDevice()) |m| _ = kext_registry.publishProviderInfo(2, m, 0);
         }
         user_spawned = spawnZigSmokeFromFat();
         if (!user_spawned and !spawnStaticSmokeFromFat("MACHSMOK")) spawnDynamicFromFat();
