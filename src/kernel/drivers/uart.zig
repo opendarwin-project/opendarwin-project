@@ -23,3 +23,16 @@ pub fn print(s: []const u8) void {
     defer lock.unlock();
     uart.write(s);
 }
+
+pub fn printHex(value: u64) void {
+    const digits = "0123456789abcdef";
+    var buf: [18]u8 = undefined;
+    buf[0] = '0';
+    buf[1] = 'x';
+    for (0..16) |i| {
+        const shift: u6 = @intCast((15 - i) * 4);
+        const digit: u4 = @truncate(value >> shift);
+        buf[2 + i] = digits[digit];
+    }
+    print(&buf);
+}

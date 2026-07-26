@@ -81,6 +81,12 @@ fn dumpFrame(kind: []const u8, frame: *const Frame) void {
     printLabeled("  spsr_el1 = ", frame.spsr_el1);
     printLabeled("  sp_el0   = ", frame.sp_el0);
     printLabeled("  x30 (lr) = ", frame.x[30]);
+    printLabeled("  x0        = ", frame.x[0]);
+    printLabeled("  x1        = ", frame.x[1]);
+    printLabeled("  x2        = ", frame.x[2]);
+    printLabeled("  x3        = ", frame.x[3]);
+    printLabeled("  x4        = ", frame.x[4]);
+    printLabeled("  x5        = ", frame.x[5]);
 }
 
 export fn handleSyncException(frame: *Frame) callconv(.c) void {
@@ -106,6 +112,7 @@ export fn handleIrqException(frame: *Frame) callconv(.c) void {
     switch (irq) {
         timer.IRQ => {
             timer.rearm();
+            timer.accountTick();
             sched.tick(cpu.coreId(), frame);
         },
         else => {

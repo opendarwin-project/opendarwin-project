@@ -86,7 +86,7 @@ fn machVmAllocateTrap(frame: *context.Frame) void {
         frame.x[0] = KERN_INVALID_ADDRESS;
         return;
     };
-    const result = sched.currentTask(cpu.coreId()).vmm.machAllocate(addr, frame.x[2], @truncate(frame.x[3]));
+    const result = sched.currentVmm(cpu.coreId()).machAllocate(addr, frame.x[2], @truncate(frame.x[3]));
     if (result.kr == KERN_SUCCESS and !usercopy.copyOut(u64, addr_ptr, result.addr)) {
         frame.x[0] = KERN_INVALID_ADDRESS;
         return;
@@ -105,7 +105,7 @@ fn machVmMapTrap(frame: *context.Frame) void {
         frame.x[0] = KERN_INVALID_ADDRESS;
         return;
     };
-    const result = sched.currentTask(cpu.coreId()).vmm.machMap(addr, frame.x[2], frame.x[3], @truncate(frame.x[4]), @truncate(frame.x[5]));
+    const result = sched.currentVmm(cpu.coreId()).machMap(addr, frame.x[2], frame.x[3], @truncate(frame.x[4]), @truncate(frame.x[5]));
     if (result.kr == KERN_SUCCESS and !usercopy.copyOut(u64, addr_ptr, result.addr)) {
         frame.x[0] = KERN_INVALID_ADDRESS;
         return;

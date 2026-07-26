@@ -2,8 +2,10 @@ const mmu = @import("mmu.zig");
 const pmm = @import("pmm.zig");
 
 const PAGE_SIZE = mmu.PAGE_SIZE;
-const MAX_REGIONS = 32;
-const MMAP_BASE: u64 = 0x1_0000_0000;
+const MAX_REGIONS = 128;
+// The main PIE executable is linked at 0x1_0000_0000. Keep anonymous
+// Mach VM mappings above it until the process VMM imports loader regions.
+const MMAP_BASE: u64 = 0x2_0000_0000;
 
 const KERN_SUCCESS: u32 = 0;
 const KERN_NO_SPACE: u32 = 3;

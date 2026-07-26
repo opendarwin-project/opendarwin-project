@@ -7,7 +7,19 @@ pub const SYS_close: u16 = 6;
 pub const SYS_fstat: u16 = 62;
 pub const SYS_munmap: u16 = 73;
 pub const SYS_mprotect: u16 = 74;
+pub const SYS_nanosleep: u16 = 240;
 pub const SYS_mmap: u16 = 197;
+
+// XNU BSD pthread ABI: bsd/kern/syscalls.master.
+pub const SYS_bsdthread_create: u16 = 360;
+pub const SYS_bsdthread_terminate: u16 = 361;
+pub const SYS_bsdthread_register: u16 = 366;
+pub const SYS_thread_selfid: u16 = 372;
+
+// Darwin ulock ABI. __ulock_wait2 is the modern five-argument variant
+// used by Zig's std.Io synchronization primitives.
+pub const SYS_ulock_wake: u16 = 516;
+pub const SYS_ulock_wait2: u16 = 544;
 
 pub const MACH__kernelrpc_mach_vm_allocate_trap: u16 = 10;
 pub const MACH__kernelrpc_mach_vm_map_trap: u16 = 15;

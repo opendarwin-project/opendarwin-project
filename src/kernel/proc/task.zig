@@ -10,12 +10,16 @@ const ipc_right = @import("../ipc/right.zig");
 
 var next_pac_seed: u64 = 0x5EED_5EED_5EED_5EED;
 
-/// One EL0 task: its own address space (a superset table containing the
-/// shared kernel mappings + this task's user segments - see mmu.zig's
-/// module doc comment for why there's no separate TTBR1 kernel range yet)
-/// plus its saved register frame. Milestone 1 is one thread per task, so
-/// this struct doubles as that thread's state; a real thread/task split
-/// comes later once more than one thread-per-task is needed.
+/// State owned by a process and shared by all of its threads.
+pub const Process = struct {
+    vmm: Vmm,
+    /// Registered by XNU syscall bsdthread_register (366).
+    bsdthread_start: u64 = 0,
+    bsdthread_wqstart: u64 = 0,
+};
+
+/// One schedulable EL0 thread. `process` owns the address-space metadata;
+/// the saved frame, IPC thread state, and PAC context are per-thread.
 pub const Task = struct {
     ttbr0: *mmu.Table,
     frame: context.Frame,
@@ -28,7 +32,9 @@ pub const Task = struct {
     task_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     thread_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     reply_port_name: types.mach_port_name_t = types.MACH_PORT_NULL,
-    vmm: Vmm,
+    /// The initial thread embeds its process state; later threads point at it.
+    owned_process: Process,
+    process: *Process,
     /// Whether SCTLR_EL1's PAC-enable bits should be on while this task
     /// runs - see pac.zig's `setEnforcement` doc comment. Defaults to true
     /// (existing behavior for every task except loader/dyld.zig's dynamic
@@ -54,10 +60,41 @@ pub const Task = struct {
             .frame = frame,
             .pac_keys = pac.deriveKeys(next_pac_seed),
             .ipc_space = undefined,
-            .vmm = undefined,
+            .owned_process = undefined,
+            .process = undefined,
         };
         task.ipc_space.init();
-        task.vmm = Vmm.init(task.ttbr0);
+        return task;
+    }
+
+    /// Must be called after this task has reached its stable scheduler-slot
+    /// address, so `process` can point at its embedded process state.
+    pub fn initProcess(self: *Task) void {
+        self.owned_process = .{ .vmm = Vmm.init(self.ttbr0) };
+        self.process = &self.owned_process;
+    }
+
+    /// Create a thread context that shares its parent's process state.
+    pub fn createThreadLike(parent: *const Task, entry: u64, stack_top: u64, arg: u64) Task {
+        var frame = context.Frame{
+            .x = [_]u64{0} ** 31,
+            .sp_el0 = stack_top,
+            .elr_el1 = entry,
+            .spsr_el1 = 0,
+            .esr_el1 = 0,
+            .far_el1 = 0,
+        };
+        frame.x[0] = arg;
+        var task: Task = .{
+            .ttbr0 = parent.ttbr0,
+            .frame = frame,
+            .pac_keys = parent.pac_keys,
+            .ipc_space = undefined,
+            .owned_process = undefined,
+            .process = parent.process,
+            .pac_enforce = parent.pac_enforce,
+        };
+        task.ipc_space.init();
         return task;
     }
 
