@@ -265,7 +265,10 @@ pub fn enableForThisCore() void {
     // TCR_EL1: 4KB granule, 48-bit VA (T0SZ=16) on TTBR0; TTBR1 walks
     // disabled entirely (EPD1=1) since this milestone doesn't use it.
     // Field layout (ARM ARM): T0SZ[5:0] EPD0[7] IRGN0[9:8] ORGN0[11:10]
-    // SH0[13:12] TG0[15:14] T1SZ[21:16] A1[22] EPD1[23] ... TBI0[37].
+    // SH0[13:12] TG0[15:14] T1SZ[21:16] A1[22] EPD1[23] IPS[34:32] TBI0[37].
+    //
+    // IPS must cover QEMU virt's high PCI ECAM (e.g. 0x4010000000). The
+    // reset default IPS=0 is 32-bit PA only and address-size-faults there.
     //
     // TBI0 matches Darwin/XNU: ignore VA[63:56] on TTBR0 walks. aarch64-macos
     // userspace (Zig/LLVM) freely parks PAC residue / ptrauth / software tags
@@ -273,6 +276,7 @@ pub fn enableForThisCore() void {
     // L0 (seen under -Doptimize=ReleaseFast on FAR 0xc0…… preferred VAs).
     const t0sz: u64 = 16;
     const EPD1: u64 = 1 << 23;
+    const IPS_48: u64 = @as(u64, 0b101) << 32; // 48-bit intermediate physical addresses
     const TBI0: u64 = 1 << 37;
     const tcr: u64 =
         t0sz | // T0SZ
@@ -281,6 +285,7 @@ pub fn enableForThisCore() void {
         (0b11 << 12) | // SH0 = inner shareable
         (0b00 << 14) | // TG0 = 4KB
         EPD1 |
+        IPS_48 |
         TBI0;
     asm volatile ("msr tcr_el1, %[v]"
         :

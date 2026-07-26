@@ -70,7 +70,10 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode, rootfs_path: ?[]
         "max",
         "-smp",
         "4",
-        "-nographic",
+        "-serial",
+        "stdio",
+        "-device",
+        "virtio-gpu-pci",
         "-kernel",
     });
     qemu_cmd.addFileArg(kernel_bin.getOutput());
@@ -232,7 +235,7 @@ fn addZigSmokeRootfs(b: *std.Build) void {
     });
     make_img.step.dependOn(b.getInstallStep());
 
-    const step = b.step("zig-smoke-rootfs", "Build a FAT32 QEMU rootfs containing zig-smoke and minimal libSystem");
+    const step = b.step("zig-smoke-rootfs", "Build a FAT32 QEMU rootfs containing zig-smoke and libSystem");
     step.dependOn(&make_img.step);
 }
 

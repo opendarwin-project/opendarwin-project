@@ -42,11 +42,17 @@ pub const Found = struct {
     /// rather than assuming the first one is real.
     virtio_blk_matches: [MAX_VIRTIO_CANDIDATES]provider.Info = undefined,
     virtio_blk_count: usize = 0,
+    /// Same for Conduit `.display` matches (virtio-gpu devices).
+    virtio_gpu_matches: [MAX_VIRTIO_CANDIDATES]provider.Info = undefined,
+    virtio_gpu_count: usize = 0,
+    /// ECAM base from the PCI host bridge, when present.
+    pci_ecam_base: ?u64 = null,
 };
 
 /// QEMU virt's DTB always lists every virtio-mmio transport slot (32 by
 /// default) regardless of how many are actually populated by `-device`.
-pub const MAX_VIRTIO_CANDIDATES: usize = 32;
+/// Extra slots leave room for PCI display devices discovered via ECAM.
+pub const MAX_VIRTIO_CANDIDATES: usize = 40;
 
 /// Reads a big-endian u64 from the first `n` bytes of a slice
 /// (where n is 4 or 8, depending on address/size cells).
@@ -118,6 +124,74 @@ pub fn discover() ?Found {
         uart.print("devicetree: virtio-mmio candidates found\n");
     }
 
+    // PCI enumeration via ECAM before MMIO display candidates: QEMU virt lists
+    // every empty virtio,mmio slot as `.display`, which would otherwise fill
+    // the candidate array and crowd out the real virtio-gpu-pci device.
+    if (findEcam(&reader)) |ecam| {
+        // Map only enough ECAM for the buses we scan (freestanding MAX_BUSES=16).
+        // A full 256 MiB window is unnecessary and expensive in boot page tables.
+        const map_size = @min(ecam.size, @as(u64, 16) << 20);
+        mmu.mapExtra(ecam.base, map_size, .{ .writable = true, .executable = false, .user = false, .device = true });
+        found.pci_ecam_base = ecam.base;
+        uart.print("devicetree: PCI ECAM base ");
+        uart.printHex(ecam.base);
+        uart.print("\n");
+
+        var pci_be = conduit.backend.pci.PciBackend.init(ecam.base);
+        const pci_matchers = [_]conduit.Matcher{conduit.pci_matcher};
+        var pci_reg = conduit.Registry.init(pci_be.any(), &pci_matchers);
+        var pci_it = pci_reg.iter(.pci);
+        var saw_pci_gpu = false;
+        while (pci_it.next() catch null) |m| {
+            if (m.pci) |p| {
+                uart.print("devicetree: PCI device ");
+                uart.printHex(@as(u64, p.vendor_id) | (@as(u64, p.device_id) << 16));
+                uart.print(" class=");
+                uart.printHex(p.class_code);
+                uart.print("\n");
+
+                const is_virtio_gpu = p.vendor_id == 0x1AF4 and p.device_id == 0x1050;
+                const is_display = p.class_code == 0x03;
+                if ((is_virtio_gpu or is_display) and found.virtio_gpu_count < MAX_VIRTIO_CANDIDATES) {
+                    // Map every memory BAR before the driver binds.
+                    var bar_i: usize = 0;
+                    while (m.mmioAt(bar_i)) |r| : (bar_i += 1) {
+                        if (r.size > 0) {
+                            mmu.mapExtra(r.base, r.size, .{ .writable = true, .executable = false, .user = false, .device = true });
+                        }
+                    }
+                    var info = provider.fromConduitMatch(&m);
+                    info.class = .display;
+                    info.name = if (is_virtio_gpu) "virtio-gpu-pci" else "pci-display";
+                    // Prefer the first MMIO BAR as a hint; PCI bind re-reads BARs from ECAM.
+                    if (m.mmio()) |r| {
+                        info.mmio_base = r.base;
+                        info.mmio_len = r.size;
+                    }
+                    found.virtio_gpu_matches[found.virtio_gpu_count] = info;
+                    found.virtio_gpu_count += 1;
+                    saw_pci_gpu = true;
+                }
+            }
+        }
+        if (saw_pci_gpu) {
+            uart.print("devicetree: PCI GPU candidates found\n");
+        }
+    }
+
+    var gpu_it = reg.iter(.display);
+    while (gpu_it.next() catch null) |m| {
+        if (found.virtio_gpu_count >= MAX_VIRTIO_CANDIDATES) break;
+        if (m.mmio()) |r| {
+            mmu.mapExtra(r.base, r.size, .{ .writable = true, .executable = false, .user = false, .device = true });
+            found.virtio_gpu_matches[found.virtio_gpu_count] = provider.fromConduitMatch(&m);
+            found.virtio_gpu_count += 1;
+        }
+    }
+    if (found.virtio_gpu_count > 0) {
+        uart.print("devicetree: virtio-gpu candidates found\n");
+    }
+
     // Parse /memory node for physical RAM layout.
     // The 'reg' property encodes (address, size) pairs using
     // #address-cells and #size-cells from the root node.
@@ -145,3 +219,63 @@ pub fn discover() ?Found {
 
     return found;
 }
+
+/// Scan the DTB for a PCI host bridge node (`pcie@*` / `pci@*`, or compatible
+/// containing `pci-host-ecam`) and return its ECAM `reg` window.
+fn findEcam(reader: *const dtree.Reader) ?EcamWindow {
+    const Frame = struct {
+        name: []const u8 = "",
+        reg: ?[]const u8 = null,
+        compatible: ?[]const u8 = null,
+    };
+
+    var stack: [32]Frame = [_]Frame{.{}} ** 32;
+    var sp: usize = 0;
+    var it = reader.nodeIterator();
+
+    while (it.next() catch null) |n| {
+        switch (n) {
+            .begin => |b| {
+                if (sp >= stack.len) return null;
+                stack[sp] = .{ .name = b.name };
+                sp += 1;
+            },
+            .end => {
+                if (sp == 0) continue;
+                sp -= 1;
+                const frame = stack[sp];
+                const name_ok = std.mem.startsWith(u8, frame.name, "pcie") or
+                    std.mem.startsWith(u8, frame.name, "pci");
+                const compat_ok = if (frame.compatible) |c|
+                    std.mem.indexOf(u8, c, "pci-host-ecam") != null
+                else
+                    false;
+                if (!(name_ok or compat_ok)) continue;
+                if (frame.reg) |rb| {
+                    if (rb.len >= 8) {
+                        const base = readBigU64(rb[0..8]);
+                        const size = if (rb.len >= 16) readBigU64(rb[8..16]) else 0x1000_0000;
+                        uart.print("devicetree: found pci node '");
+                        uart.print(frame.name);
+                        uart.print("'\n");
+                        return .{
+                            .base = base,
+                            .size = if (size == 0) 0x1000_0000 else size,
+                        };
+                    }
+                }
+            },
+            .prop => |p| {
+                if (sp == 0) continue;
+                if (std.mem.eql(u8, p.name, "reg")) {
+                    stack[sp - 1].reg = p.value;
+                } else if (std.mem.eql(u8, p.name, "compatible")) {
+                    stack[sp - 1].compatible = p.value;
+                }
+            },
+        }
+    }
+    return null;
+}
+
+const EcamWindow = struct { base: u64, size: u64 };

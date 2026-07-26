@@ -69,21 +69,23 @@ pub fn publishSmokeProvider() bool {
     });
 }
 
-pub fn publishConduitProvider(id: u64, class_value: conduit.Class, name: []const u8, mmio_base: u64, mmio_len: u64, irq: u64) bool {
-    const class = driverClassFromConduit(class_value) orelse return false;
+pub fn publishProviderInfo(id: u64, info: provider_info.Info, ecam_base: u64) bool {
+    const class = driverClassFromConduit(info.class) orelse return false;
     return publishProvider(.{
         .id = id,
         .class = class,
-        .name_ptr = name.ptr,
-        .name_len = name.len,
-        .mmio_base = mmio_base,
-        .mmio_len = mmio_len,
-        .irq = irq,
+        .name_ptr = info.name.ptr,
+        .name_len = info.name.len,
+        .mmio_base = info.mmio_base,
+        .mmio_len = info.mmio_len,
+        .irq = info.irq,
+        .ecam_base = ecam_base,
+        .pci_bus = info.pci_bus,
+        .pci_device = info.pci_device,
+        .pci_function = info.pci_function,
+        .pci_vendor_id = info.pci_vendor_id,
+        .pci_device_id = info.pci_device_id,
     });
-}
-
-pub fn publishProviderInfo(id: u64, info: provider_info.Info) bool {
-    return publishConduitProvider(id, info.class, info.name, info.mmio_base, info.mmio_len, info.irq);
 }
 
 pub fn count() usize {
@@ -116,6 +118,7 @@ fn startIfMatched(driver_idx: usize, provider_idx: usize) void {
 fn driverClassFromConduit(class: conduit.Class) ?u64 {
     return switch (class) {
         .block => api.DRIVER_CLASS_BLOCK,
+        .display => api.DRIVER_CLASS_DISPLAY,
         else => null,
     };
 }

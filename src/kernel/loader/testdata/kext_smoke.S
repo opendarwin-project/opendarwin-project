@@ -8,7 +8,7 @@ _kext_start:
     mov x19, x0
 
     ldr x8, [x19, #0]
-    mov x9, #1
+    mov x9, #3
     cmp x8, x9
     b.ne 1f
 
@@ -20,7 +20,7 @@ _kext_start:
 
     adrp x20, _driver_descriptor@PAGE
     add x20, x20, _driver_descriptor@PAGEOFF
-    mov x8, #1
+    mov x8, #3
     str x8, [x20, #0]
     adrp x8, L_driver_name@PAGE
     add x8, x8, L_driver_name@PAGEOFF
