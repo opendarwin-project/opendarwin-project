@@ -323,7 +323,7 @@ pub fn inheritExtraInTaskTables(pa: u64, len: u64, prot: Prot) void {
 // copies are safe again (Normal memory tolerates unaligned/wide accesses),
 // so unlike the boot-time code above these don't need the same care.
 
-const MAX_BOOT_PAGES = 256;
+const MAX_BOOT_PAGES = 4096;
 // linksection(".userpages"): deliberately placed outside the range
 // kernel_regions maps as kernel-only - see linker.ld and the module doc
 // comment for why sharing that range with task-owned pages is fatal.
