@@ -157,20 +157,51 @@ fn vnodeOps(vp: *Vnode) *const VnodeOps {
     return vp.ops.?;
 }
 
+/// Kernel helper: look up a regular file and return a referenced vnode + size.
+/// Caller must `vrele` the vnode. Used by streaming loaders that read by offset.
+pub fn openFile(path: []const u8) ?struct { vp: *Vnode, size: u64 } {
+    const namei = @import("namei.zig");
+    const vp = namei.lookup(path) orelse return null;
+    if (vp.typ != .reg) {
+        vrele(vp);
+        return null;
+    }
+    var attr: Vattr = .{};
+    if (vnodeOps(vp).getattr(vp, &attr) != 0) {
+        vrele(vp);
+        return null;
+    }
+    return .{ .vp = vp, .size = attr.size };
+}
+
+/// Size of a regular file by path, or null if missing / not a regular file.
+pub fn fileSize(path: []const u8) ?u64 {
+    const opened = openFile(path) orelse return null;
+    defer vrele(opened.vp);
+    return opened.size;
+}
+
 /// Kernel helper: read an entire file by absolute or relative-from-root path.
 /// Same contract as the old `fat.readFile` — used by the early loader paths.
 pub fn readFile(path: []const u8, buf: []u8) ?usize {
-    const namei = @import("namei.zig");
-    const vp = namei.lookup(path) orelse return null;
-    defer vrele(vp);
-    if (vp.typ != .reg) return null;
-    var attr: Vattr = .{};
-    if (vnodeOps(vp).getattr(vp, &attr) != 0) return null;
-    if (attr.size > buf.len) return null;
-    if (attr.size == 0) return 0;
-    const n = vnodeOps(vp).read(vp, 0, buf[0..attr.size]);
+    const opened = openFile(path) orelse return null;
+    defer vrele(opened.vp);
+    if (opened.size > buf.len) return null;
+    if (opened.size == 0) return 0;
+    const n = vnodeOps(opened.vp).read(opened.vp, 0, buf[0..opened.size]);
     if (n < 0) return null;
     return @intCast(n);
+}
+
+/// Read exactly `buf.len` bytes at `offset`, or null on short / I/O error.
+pub fn readExact(vp: *Vnode, offset: u64, buf: []u8) bool {
+    var done: usize = 0;
+    while (done < buf.len) {
+        const n = vopRead(vp, offset + done, buf[done..]);
+        if (n <= 0) return false;
+        done += @intCast(n);
+    }
+    return true;
 }
 
 pub fn vopLookup(dvp: *Vnode, name: []const u8, vpp: *?*Vnode) i32 {

@@ -410,3 +410,11 @@ pub fn mount(dev: Block) bool {
 pub fn readFile(path: []const u8, buf: []u8) ?usize {
     return vfs.readFile(path, buf);
 }
+
+pub fn fileSize(path: []const u8) ?u64 {
+    return vfs.fileSize(path);
+}
+
+pub fn openFile(path: []const u8) ?struct { vp: *vfs.Vnode, size: u64 } {
+    return vfs.openFile(path);
+}

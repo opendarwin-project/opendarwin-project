@@ -1,12 +1,17 @@
 //! Mach-O loaders for regular arm64 executable/dylib images and relocatable kernel objects.
 //!
 //! MH_EXECUTE/MH_DYLIB images map LC_SEGMENT_64 commands preserving vmaddr-relative layout.
+//! Prefer `loadPath` for rootfs images: it streams each segment from the vnode into its
+//! destination pages (header + load commands only are buffered) and reads symtab/dyld
+//! metadata from the already-loaded LINKEDIT. Segment/section/symbol scratch storage is
+//! sized dynamically from Mach-O counts.
 //! MH_OBJECT images use the KEXT path: allocate kernel-only section storage, resolve nlist_64
 //! locals/externals, apply arm64 section relocations, and report constructor pointers.
 
 const std = @import("std");
 const mmu = @import("../mm/mmu.zig");
 const pmm = @import("../mm/pmm.zig");
+const vfs = @import("../fs/vfs.zig");
 const dyld = @import("dyld.zig");
 
 const MH_MAGIC_64: u32 = 0xfeedfacf;
@@ -161,25 +166,19 @@ const BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB: u8 = 0xA0;
 const BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED: u8 = 0xB0;
 const BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB: u8 = 0xC0;
 
-const MAX_SEGMENTS = 8;
-const MAX_SECTIONS = 32;
-const MAX_LOCAL_RELOCS = 64;
-const MAX_EXT_RELOCS = 64;
-
 pub const LoadError = error{
     BadMagic,
     WrongArch,
     UnsupportedFileType,
     NoEntryPoint,
     Truncated,
-    TooManySegments,
-    TooManySections,
     TooManyRelocations,
     OutOfRegions,
     UnsupportedImportFormat,
     UnsupportedPointerFormat,
     UnsupportedRelocation,
     UnresolvedSymbol,
+    Io,
 };
 
 // Valid until the next load; the name is backed by the loaded Mach-O image.
@@ -208,20 +207,58 @@ pub const KernelResolver = *const fn (ctx: ?*anyopaque, name: []const u8) ?u64;
 pub const KernelObjectOptions = struct { resolver: KernelResolver, resolver_ctx: ?*anyopaque = null };
 pub const KernelObjectResult = struct { base: u64, len: u64, sections: []const Section, local_symbols: []const Symbol, external_symbols: []const Symbol, undefined_symbols: []const Symbol, constructors: []const u64 };
 
-var section_storage: [MAX_SECTIONS]Section = undefined;
 var constructor_storage: [32]u64 = undefined;
 
-// Symbol tables are sized dynamically from the Mach-O symtab's nsyms count
-// rather than a fixed cap: modern dylibs (e.g. libSystem with CoreFoundation
-// support) can carry well over a thousand exported symbols.
+// Scratch tables (symbols, sections, segments, relocs) are sized dynamically
+// from Mach-O counts rather than fixed caps: modern dylibs (e.g. libSystem
+// with CoreFoundation support) can carry well over a thousand exports and
+// more sections/segments than a small static array allows.
 fn allocDynSlice(comptime T: type, count: usize) []T {
     if (count == 0) return &.{};
     const bytes = count * @sizeOf(T);
     const pages = pageAlign(bytes) / mmu.PAGE_SIZE;
     const pa = pmm.allocPagesContig(pages);
-    if (pa == 0) @panic("macho: allocPagesContig failed (symbol/reloc storage)");
+    if (pa == 0) @panic("macho: allocPagesContig failed (dyn storage)");
     const ptr: [*]T = @ptrFromInt(pa);
     return ptr[0..count];
+}
+
+fn countCommands(cmds: []const u8, ncmds: u32) LoadError!struct { segments: usize, sections: usize } {
+    var segments: usize = 0;
+    var sections: usize = 0;
+    var off: usize = 0;
+    var i: u32 = 0;
+    while (i < ncmds) : (i += 1) {
+        if (off + @sizeOf(LoadCommand) > cmds.len) return LoadError.Truncated;
+        const lc: *const LoadCommand = @ptrCast(@alignCast(cmds.ptr + off));
+        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > cmds.len) return LoadError.Truncated;
+        if (lc.cmd == LC_SEGMENT_64) {
+            if (lc.cmdsize < @sizeOf(SegmentCommand64)) return LoadError.Truncated;
+            const seg: *const SegmentCommand64 = @ptrCast(@alignCast(cmds.ptr + off));
+            if (@sizeOf(SegmentCommand64) + @as(usize, seg.nsects) * @sizeOf(Section64) > lc.cmdsize) return LoadError.Truncated;
+            segments += 1;
+            sections += seg.nsects;
+        }
+        off += lc.cmdsize;
+    }
+    return .{ .segments = segments, .sections = sections };
+}
+
+/// Translate a file-offset range into a contiguous slice inside the already-loaded
+/// segment image. Used so bind/symtab/LINKEDIT metadata does not require keeping
+/// a second full-file buffer in RAM after segments are mapped.
+fn mappedFileSlice(segs: []const SegInfo, base_pa: u64, min_vmaddr: u64, file_len: u64, off: u64, len: u64) LoadError![]const u8 {
+    if (len == 0) return &.{};
+    if (off + len > file_len) return LoadError.Truncated;
+    for (segs) |s| {
+        if (s.filesize == 0) continue;
+        if (off >= s.fileoff and off + len <= s.fileoff + s.filesize) {
+            const pa = base_pa + (s.vmaddr - min_vmaddr) + (off - s.fileoff);
+            const ptr: [*]const u8 = @ptrFromInt(pa);
+            return ptr[0..@intCast(len)];
+        }
+    }
+    return LoadError.Truncated;
 }
 
 pub const LoadResult = struct {
@@ -244,26 +281,28 @@ pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadErr
     if (header.filetype != MH_OBJECT) return LoadError.UnsupportedFileType;
     if (@sizeOf(MachHeader64) + header.sizeofcmds > image.len) return LoadError.Truncated;
 
-    var object_sections: [MAX_SECTIONS]ObjectSection = undefined;
+    const cmds = image[@sizeOf(MachHeader64)..][0..header.sizeofcmds];
+    const counts = try countCommands(cmds, header.ncmds);
+    const object_sections = allocDynSlice(ObjectSection, counts.sections);
+    const section_storage = allocDynSlice(Section, counts.sections);
     var section_count: usize = 0;
     var symtab: ?Symtab = null;
 
-    var off: usize = @sizeOf(MachHeader64);
+    var off: usize = 0;
     var cmd_i: u32 = 0;
     while (cmd_i < header.ncmds) : (cmd_i += 1) {
-        if (off + @sizeOf(LoadCommand) > image.len) return LoadError.Truncated;
-        const lc: *const LoadCommand = @ptrCast(@alignCast(image.ptr + off));
-        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > image.len) return LoadError.Truncated;
+        if (off + @sizeOf(LoadCommand) > cmds.len) return LoadError.Truncated;
+        const lc: *const LoadCommand = @ptrCast(@alignCast(cmds.ptr + off));
+        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > cmds.len) return LoadError.Truncated;
         switch (lc.cmd) {
             LC_SEGMENT_64 => {
                 if (lc.cmdsize < @sizeOf(SegmentCommand64)) return LoadError.Truncated;
-                const seg: *const SegmentCommand64 = @ptrCast(@alignCast(image.ptr + off));
+                const seg: *const SegmentCommand64 = @ptrCast(@alignCast(cmds.ptr + off));
                 const sections_off = off + @sizeOf(SegmentCommand64);
                 if (sections_off + @as(usize, seg.nsects) * @sizeOf(Section64) > off + lc.cmdsize) return LoadError.Truncated;
                 var si: u32 = 0;
                 while (si < seg.nsects) : (si += 1) {
-                    if (section_count >= MAX_SECTIONS) return LoadError.TooManySections;
-                    const sec: *const Section64 = @ptrCast(@alignCast(image.ptr + sections_off + @as(usize, si) * @sizeOf(Section64)));
+                    const sec: *const Section64 = @ptrCast(@alignCast(cmds.ptr + sections_off + @as(usize, si) * @sizeOf(Section64)));
                     object_sections[section_count] = .{ .input = sec.*, .loaded = 0 };
                     section_storage[section_count] = .{ .sectname = sec.sectname, .segname = sec.segname, .addr = 0, .size = sec.size, .flags = sec.flags };
                     section_count += 1;
@@ -271,7 +310,7 @@ pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadErr
             },
             LC_SYMTAB => {
                 if (lc.cmdsize < @sizeOf(SymtabCommand)) return LoadError.Truncated;
-                const sc: *const SymtabCommand = @ptrCast(@alignCast(image.ptr + off));
+                const sc: *const SymtabCommand = @ptrCast(@alignCast(cmds.ptr + off));
                 symtab = .{ .symoff = sc.symoff, .nsyms = sc.nsyms, .stroff = sc.stroff, .strsize = sc.strsize };
             },
             else => {},
@@ -354,37 +393,82 @@ pub fn load(image: []const u8, regions_out: []mmu.Region, regions_used: *usize, 
 }
 
 pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_used: *usize, options: LoadOptions) LoadError!LoadResult {
+    return loadFromSource(.{ .bytes = image }, regions_out, regions_used, options);
+}
+
+/// Stream an MH_EXECUTE/MH_DYLIB from the mounted rootfs: only the Mach-O
+/// header + load commands are buffered, and each LC_SEGMENT_64's file range is
+/// read directly into its destination pages. Symtab/dyld metadata is then
+/// consumed from the already-loaded LINKEDIT (or other) segments.
+pub fn loadPath(path: []const u8, regions_out: []mmu.Region, regions_used: *usize, options: LoadOptions) LoadError!LoadResult {
+    const opened = vfs.openFile(path) orelse return LoadError.Io;
+    defer vfs.vrele(opened.vp);
+    return loadFromSource(.{ .vnode = .{ .vp = opened.vp, .size = opened.size } }, regions_out, regions_used, options);
+}
+
+const ImageSource = union(enum) {
+    bytes: []const u8,
+    vnode: struct { vp: *vfs.Vnode, size: u64 },
+
+    fn fileLen(self: ImageSource) u64 {
+        return switch (self) {
+            .bytes => |b| b.len,
+            .vnode => |v| v.size,
+        };
+    }
+
+    fn read(self: ImageSource, offset: u64, buf: []u8) LoadError!void {
+        if (buf.len == 0) return;
+        if (offset + buf.len > self.fileLen()) return LoadError.Truncated;
+        switch (self) {
+            .bytes => |b| @memcpy(buf, b[@intCast(offset)..][0..buf.len]),
+            .vnode => |v| {
+                if (!vfs.readExact(v.vp, offset, buf)) return LoadError.Io;
+            },
+        }
+    }
+};
+
+fn loadFromSource(source: ImageSource, regions_out: []mmu.Region, regions_used: *usize, options: LoadOptions) LoadError!LoadResult {
     last_unresolved_symbol = "";
-    if (image.len < @sizeOf(MachHeader64)) return LoadError.Truncated;
-    const header: *const MachHeader64 = @ptrCast(@alignCast(image.ptr));
+    const file_len = source.fileLen();
+    if (file_len < @sizeOf(MachHeader64)) return LoadError.Truncated;
+
+    var header: MachHeader64 = undefined;
+    try source.read(0, std.mem.asBytes(&header));
     if (header.magic != MH_MAGIC_64) return LoadError.BadMagic;
     if ((header.cputype & CPU_TYPE_ARM64_MASK) != CPU_TYPE_ARM64) return LoadError.WrongArch;
     if (header.filetype != MH_EXECUTE and header.filetype != MH_DYLIB) return LoadError.UnsupportedFileType;
-    if (@sizeOf(MachHeader64) + header.sizeofcmds > image.len) return LoadError.Truncated;
+    if (@as(u64, @sizeOf(MachHeader64)) + header.sizeofcmds > file_len) return LoadError.Truncated;
+
+    const cmds = allocDynSlice(u8, header.sizeofcmds);
+    try source.read(@sizeOf(MachHeader64), cmds);
+
+    const counts = try countCommands(cmds, header.ncmds);
+    const seg_headers = allocDynSlice(SegInfo, counts.segments);
+    const section_storage = allocDynSlice(Section, counts.sections);
 
     var entry_vmaddr: ?u64 = null;
     var entry_fileoff: ?u64 = null;
     var dyldinfo: ?DyldInfo = null;
-    var chained_fixups: ?[]const u8 = null;
+    var chained_fixups_off: ?u32 = null;
+    var chained_fixups_size: u32 = 0;
     var symtab: ?Symtab = null;
     var dysymtab: ?Dysymtab = null;
-
-    var seg_headers: [MAX_SEGMENTS]SegInfo = undefined;
     var seg_count: usize = 0;
     var section_count: usize = 0;
 
-    var off: usize = @sizeOf(MachHeader64);
+    var off: usize = 0;
     var i: u32 = 0;
     while (i < header.ncmds) : (i += 1) {
-        if (off + @sizeOf(LoadCommand) > image.len) return LoadError.Truncated;
-        const lc: *const LoadCommand = @ptrCast(@alignCast(image.ptr + off));
-        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > image.len) return LoadError.Truncated;
+        if (off + @sizeOf(LoadCommand) > cmds.len) return LoadError.Truncated;
+        const lc: *const LoadCommand = @ptrCast(@alignCast(cmds.ptr + off));
+        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > cmds.len) return LoadError.Truncated;
 
         switch (lc.cmd) {
             LC_SEGMENT_64 => {
                 if (lc.cmdsize < @sizeOf(SegmentCommand64)) return LoadError.Truncated;
-                const seg: *const SegmentCommand64 = @ptrCast(@alignCast(image.ptr + off));
-                if (seg_count >= MAX_SEGMENTS) return LoadError.TooManySegments;
+                const seg: *const SegmentCommand64 = @ptrCast(@alignCast(cmds.ptr + off));
                 seg_headers[seg_count] = .{ .vmaddr = seg.vmaddr, .vmsize = seg.vmsize, .fileoff = seg.fileoff, .filesize = seg.filesize, .initprot = seg.initprot, .maxprot = seg.maxprot };
                 seg_count += 1;
 
@@ -392,51 +476,48 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
                 if (sections_off + @as(usize, seg.nsects) * @sizeOf(Section64) > off + lc.cmdsize) return LoadError.Truncated;
                 var si: u32 = 0;
                 while (si < seg.nsects) : (si += 1) {
-                    if (section_count >= MAX_SECTIONS) return LoadError.TooManySections;
-                    const sec: *const Section64 = @ptrCast(@alignCast(image.ptr + sections_off + @as(usize, si) * @sizeOf(Section64)));
+                    const sec: *const Section64 = @ptrCast(@alignCast(cmds.ptr + sections_off + @as(usize, si) * @sizeOf(Section64)));
                     section_storage[section_count] = .{ .sectname = sec.sectname, .segname = sec.segname, .addr = sec.addr, .size = sec.size, .flags = sec.flags };
                     section_count += 1;
                 }
             },
             LC_UNIXTHREAD => {
                 if (lc.cmdsize < @sizeOf(ThreadCommand) + 33 * 8) return LoadError.Truncated;
-                const tc: *const ThreadCommand = @ptrCast(@alignCast(image.ptr + off));
+                const tc: *const ThreadCommand = @ptrCast(@alignCast(cmds.ptr + off));
                 if (tc.flavor == ARM_THREAD_STATE64) {
-                    const regs_base = image.ptr + off + @sizeOf(ThreadCommand);
+                    const regs_base = cmds.ptr + off + @sizeOf(ThreadCommand);
                     const pc_ptr: *align(1) const u64 = @ptrCast(regs_base + 32 * 8);
                     entry_vmaddr = pc_ptr.*;
                 }
             },
             LC_MAIN => {
                 if (lc.cmdsize < 24) return LoadError.Truncated;
-                entry_fileoff = readU64(image[off + 8 ..]);
+                entry_fileoff = readU64(cmds[off + 8 ..]);
             },
             LC_DYLD_INFO_ONLY => {
                 if (lc.cmdsize < 48) return LoadError.Truncated;
                 dyldinfo = .{
-                    .rebase_off = readU32(image[off + 8 ..]),
-                    .rebase_size = readU32(image[off + 12 ..]),
-                    .bind_off = readU32(image[off + 16 ..]),
-                    .bind_size = readU32(image[off + 20 ..]),
-                    .lazy_bind_off = readU32(image[off + 32 ..]),
-                    .lazy_bind_size = readU32(image[off + 36 ..]),
+                    .rebase_off = readU32(cmds[off + 8 ..]),
+                    .rebase_size = readU32(cmds[off + 12 ..]),
+                    .bind_off = readU32(cmds[off + 16 ..]),
+                    .bind_size = readU32(cmds[off + 20 ..]),
+                    .lazy_bind_off = readU32(cmds[off + 32 ..]),
+                    .lazy_bind_size = readU32(cmds[off + 36 ..]),
                 };
             },
             LC_DYLD_CHAINED_FIXUPS => {
                 if (lc.cmdsize < 16) return LoadError.Truncated;
-                const dataoff = readU32(image[off + 8 ..]);
-                const datasize = readU32(image[off + 12 ..]);
-                if (@as(u64, dataoff) + datasize > image.len) return LoadError.Truncated;
-                chained_fixups = image[dataoff..][0..datasize];
+                chained_fixups_off = readU32(cmds[off + 8 ..]);
+                chained_fixups_size = readU32(cmds[off + 12 ..]);
             },
             LC_SYMTAB => {
                 if (lc.cmdsize < @sizeOf(SymtabCommand)) return LoadError.Truncated;
-                const sc: *const SymtabCommand = @ptrCast(@alignCast(image.ptr + off));
+                const sc: *const SymtabCommand = @ptrCast(@alignCast(cmds.ptr + off));
                 symtab = .{ .symoff = sc.symoff, .nsyms = sc.nsyms, .stroff = sc.stroff, .strsize = sc.strsize };
             },
             LC_DYSYMTAB => {
                 if (lc.cmdsize < @sizeOf(DysymtabCommand)) return LoadError.Truncated;
-                const dc: *const DysymtabCommand = @ptrCast(@alignCast(image.ptr + off));
+                const dc: *const DysymtabCommand = @ptrCast(@alignCast(cmds.ptr + off));
                 dysymtab = .{ .ilocalsym = dc.ilocalsym, .nlocalsym = dc.nlocalsym, .iextdefsym = dc.iextdefsym, .nextdefsym = dc.nextdefsym, .iundefsym = dc.iundefsym, .nundefsym = dc.nundefsym, .extreloff = dc.extreloff, .nextrel = dc.nextrel, .locreloff = dc.locreloff, .nlocrel = dc.nlocrel };
             },
             else => {},
@@ -494,16 +575,20 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     var region_idx: usize = 0;
     for (seg_headers[0..seg_count]) |s| {
         if (s.vmsize == 0 or s.maxprot == 0) continue;
-        if (@as(u64, s.fileoff) + s.filesize > image.len) return LoadError.Truncated;
+        if (s.fileoff + s.filesize > file_len) return LoadError.Truncated;
         const seg_pa = base_pa + (s.vmaddr - min_vmaddr);
         const copy_len = @min(s.filesize, s.vmsize);
         if (copy_len > 0) {
             const dst: [*]u8 = @ptrFromInt(seg_pa);
-            @memcpy(dst[0..copy_len], image[s.fileoff..][0..copy_len]);
+            try source.read(s.fileoff, dst[0..@intCast(copy_len)]);
         }
         regions_out[region_idx] = .{ .pa = seg_pa, .len = pageAlign(s.vmsize), .prot = segProt(s.initprot, options.user_accessible) };
         region_idx += 1;
     }
+
+    // Prefer metadata from the loaded image so the vnode/bytes source can be
+    // released (path loads) without keeping a second full-file copy around.
+    const segs = seg_headers[0..seg_count];
 
     var local_symbol_count: usize = 0;
     var external_symbol_count: usize = 0;
@@ -512,10 +597,16 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     var external_symbol_storage: []Symbol = &.{};
     var undefined_symbol_storage: []Symbol = &.{};
     if (symtab) |st| {
+        const sym_bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, st.symoff, @as(u64, st.nsyms) * @sizeOf(Nlist64));
+        const str_bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, st.stroff, st.strsize);
+        // parseSymbols addresses by absolute file offsets into a contiguous
+        // "image". Build a tiny window: we only need symoff/stroff to land
+        // inside their respective slices, so synthesize a view by parsing
+        // directly from the mapped slices instead.
         local_symbol_storage = allocDynSlice(Symbol, st.nsyms);
         external_symbol_storage = allocDynSlice(Symbol, st.nsyms);
         undefined_symbol_storage = allocDynSlice(Symbol, st.nsyms);
-        parseSymbols(image, st, dysymtab, rebase_slide, local_symbol_storage, &local_symbol_count, external_symbol_storage, &external_symbol_count, undefined_symbol_storage, &undefined_symbol_count) catch |err| return err;
+        try parseSymbolsMapped(sym_bytes, str_bytes, st, dysymtab, rebase_slide, local_symbol_storage, &local_symbol_count, external_symbol_storage, &external_symbol_count, undefined_symbol_storage, &undefined_symbol_count);
     }
 
     var local_reloc_count: usize = 0;
@@ -525,25 +616,36 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     if (dysymtab) |dt| {
         local_reloc_storage = allocDynSlice(Relocation, dt.nlocrel);
         external_reloc_storage = allocDynSlice(Relocation, dt.nextrel);
-        parseRelocs(image, dt.locreloff, dt.nlocrel, local_reloc_storage, &local_reloc_count) catch |err| return err;
-        parseRelocs(image, dt.extreloff, dt.nextrel, external_reloc_storage, &external_reloc_count) catch |err| return err;
-        applyExternalRelocations(base_pa, min_vmaddr, external_reloc_storage, external_reloc_count, undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx) catch |err| return err;
+        if (dt.nlocrel > 0) {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dt.locreloff, @as(u64, dt.nlocrel) * @sizeOf(RelocationInfo));
+            try parseRelocsBytes(bytes, dt.nlocrel, local_reloc_storage, &local_reloc_count);
+        }
+        if (dt.nextrel > 0) {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dt.extreloff, @as(u64, dt.nextrel) * @sizeOf(RelocationInfo));
+            try parseRelocsBytes(bytes, dt.nextrel, external_reloc_storage, &external_reloc_count);
+        }
+        try applyExternalRelocations(base_pa, min_vmaddr, external_reloc_storage, external_reloc_count, undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx);
     }
 
     if (dyldinfo) |info| {
-        if (@as(u64, info.rebase_off) + info.rebase_size > image.len) return LoadError.Truncated;
-        if (info.rebase_size > 0) applyRebase(image[info.rebase_off..][0..info.rebase_size], seg_headers[0..seg_count], base_pa, rebase_slide, min_vmaddr);
-    }
-
-    if (dyldinfo) |info| {
-        if (@as(u64, info.bind_off) + info.bind_size > image.len or @as(u64, info.lazy_bind_off) + info.lazy_bind_size > image.len) return LoadError.Truncated;
-        if (info.bind_size > 0) try applyBindings(image[info.bind_off..][0..info.bind_size], seg_headers[0..seg_count], base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+        if (info.rebase_size > 0) {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.rebase_off, info.rebase_size);
+            applyRebase(bytes, segs, base_pa, rebase_slide, min_vmaddr);
+        }
+        if (info.bind_size > 0) {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.bind_off, info.bind_size);
+            try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+        }
         // A full dyld resolves these on first use through a stub. Eagerly bind
         // them because this kernel loader deliberately has no dyld trampoline.
-        if (info.lazy_bind_size > 0) try applyBindings(image[info.lazy_bind_off..][0..info.lazy_bind_size], seg_headers[0..seg_count], base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+        if (info.lazy_bind_size > 0) {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.lazy_bind_off, info.lazy_bind_size);
+            try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+        }
     }
 
-    if (chained_fixups) |bytes| {
+    if (chained_fixups_off) |dataoff| {
+        const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dataoff, chained_fixups_size);
         const r = options.resolver orelse return LoadError.UnresolvedSymbol;
         dyld.applyChainedFixups(bytes, base_pa, r, options.resolver_ctx) catch |err| return switch (err) {
             error.Truncated => LoadError.Truncated,
@@ -700,16 +802,15 @@ fn pageAlign(n: u64) u64 {
     return (n + mmu.PAGE_SIZE - 1) & ~@as(u64, mmu.PAGE_SIZE - 1);
 }
 
-fn symName(image: []const u8, st: Symtab, strx: u32) LoadError![]const u8 {
-    if (strx >= st.strsize or @as(u64, st.stroff) + st.strsize > image.len) return LoadError.Truncated;
-    const start = @as(usize, st.stroff + strx);
-    const strings_end = @as(usize, st.stroff + st.strsize);
-    const end = std.mem.indexOfScalar(u8, image[start..strings_end], 0) orelse return LoadError.Truncated;
-    return image[start..][0..end];
+fn symNameFromStrings(strings: []const u8, strx: u32) LoadError![]const u8 {
+    if (strx >= strings.len) return LoadError.Truncated;
+    const end = std.mem.indexOfScalar(u8, strings[strx..], 0) orelse return LoadError.Truncated;
+    return strings[strx..][0..end];
 }
 
-fn parseSymbols(
-    image: []const u8,
+fn parseSymbolsMapped(
+    sym_bytes: []const u8,
+    str_bytes: []const u8,
     st: Symtab,
     dt_opt: ?Dysymtab,
     slide: u64,
@@ -720,12 +821,12 @@ fn parseSymbols(
     undefs: []Symbol,
     undef_count: *usize,
 ) LoadError!void {
-    if (@as(u64, st.symoff) + @as(u64, st.nsyms) * @sizeOf(Nlist64) > image.len) return LoadError.Truncated;
+    if (sym_bytes.len < @as(usize, st.nsyms) * @sizeOf(Nlist64)) return LoadError.Truncated;
     var i: u32 = 0;
     while (i < st.nsyms) : (i += 1) {
-        const n: *const Nlist64 = @ptrCast(@alignCast(image.ptr + st.symoff + @as(usize, i) * @sizeOf(Nlist64)));
+        const n: *const Nlist64 = @ptrCast(@alignCast(sym_bytes.ptr + @as(usize, i) * @sizeOf(Nlist64)));
         const kind: SymbolKind = if ((n.n_type & N_TYPE) == N_UNDF) .undefined else if ((n.n_type & N_EXT) != 0) .external else .local;
-        const sym = Symbol{ .name = try symName(image, st, n.n_strx), .value = if ((n.n_type & N_TYPE) == N_SECT) n.n_value +% slide else n.n_value, .sect = n.n_sect, .kind = kind };
+        const sym = Symbol{ .name = try symNameFromStrings(str_bytes, n.n_strx), .value = if ((n.n_type & N_TYPE) == N_SECT) n.n_value +% slide else n.n_value, .sect = n.n_sect, .kind = kind };
         switch (kind) {
             .undefined => {
                 if (undef_count.* < undefs.len) {
@@ -754,17 +855,25 @@ fn parseSymbols(
     }
 }
 
+fn symName(image: []const u8, st: Symtab, strx: u32) LoadError![]const u8 {
+    if (strx >= st.strsize or @as(u64, st.stroff) + st.strsize > image.len) return LoadError.Truncated;
+    const start = @as(usize, st.stroff + strx);
+    const strings_end = @as(usize, st.stroff + st.strsize);
+    const end = std.mem.indexOfScalar(u8, image[start..strings_end], 0) orelse return LoadError.Truncated;
+    return image[start..][0..end];
+}
+
 fn validateSymRange(nsyms: u32, start: u32, count: u32) !void {
     if (@as(u64, start) + count > nsyms) return error.BadRange;
 }
 
-fn parseRelocs(image: []const u8, reloff: u32, nreloc: u32, out: []Relocation, count: *usize) LoadError!void {
+fn parseRelocsBytes(bytes: []const u8, nreloc: u32, out: []Relocation, count: *usize) LoadError!void {
     if (nreloc == 0) return;
     if (nreloc > out.len) return LoadError.TooManyRelocations;
-    if (@as(u64, reloff) + @as(u64, nreloc) * @sizeOf(RelocationInfo) > image.len) return LoadError.Truncated;
+    if (bytes.len < @as(usize, nreloc) * @sizeOf(RelocationInfo)) return LoadError.Truncated;
     var i: u32 = 0;
     while (i < nreloc) : (i += 1) {
-        const raw: *const RelocationInfo = @ptrCast(@alignCast(image.ptr + reloff + @as(usize, i) * @sizeOf(RelocationInfo)));
+        const raw: *const RelocationInfo = @ptrCast(@alignCast(bytes.ptr + @as(usize, i) * @sizeOf(RelocationInfo)));
         if (raw.r_address < 0) return LoadError.UnsupportedRelocation;
         const word = raw.r_word;
         out[count.*] = .{ .address = @intCast(raw.r_address), .symbolnum = word & 0x00ff_ffff, .pcrel = ((word >> 24) & 1) != 0, .length = @intCast((word >> 25) & 0x3), .extern_ = ((word >> 27) & 1) != 0, .type_ = @intCast((word >> 28) & 0xf) };
@@ -902,7 +1011,6 @@ fn relocTarget(r: Relocation, base: u64, sections: []const ObjectSection, symbol
 }
 
 fn applyObjectRelocations(image: []const u8, reloff: u32, nreloc: u32, section_addr: u64, base: u64, sections: []const ObjectSection, symbols: []Symbol, nsyms: u32, options: KernelObjectOptions) LoadError!void {
-    if (nreloc > MAX_LOCAL_RELOCS) return LoadError.TooManyRelocations;
     if (@as(u64, reloff) + @as(u64, nreloc) * @sizeOf(RelocationInfo) > image.len) return LoadError.Truncated;
     var i: u32 = 0;
     var addend: i64 = 0;
