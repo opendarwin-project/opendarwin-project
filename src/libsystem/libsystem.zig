@@ -22,7 +22,6 @@
 //!   dispatch.zig   — dispatch_queue, dispatch_async, dispatch_source
 //!   sysctl.zig     — sysctlbyname, confstr, sysconf
 //!   misc.zig       — getenv, environ, uuid_generate, pow, fmod, atexit, etc.
-//!   iokit.zig      — IOKitLib: IOMasterPort, IOServiceMatching, IOConnectTrap
 
 // Pull all sub-modules into the compilation.  Each module's `pub export fn`
 // and `pub export var` declarations become symbols of the shared library.
@@ -43,7 +42,6 @@ comptime {
     _ = @import("dispatch.zig");
     _ = @import("sysctl.zig");
     _ = @import("misc.zig");
-    _ = @import("iokit.zig");
     _ = @import("blocks.zig");
 }
 

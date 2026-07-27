@@ -30,7 +30,7 @@
     __CF*Class slots), or build the non-ICU ones
   - link CoreFoundation as a dylib with -sectcreate __UNICODE (tables ship in
     the dependency's CharacterSets/) + a `cf-smoke` userland program
-  - replace the hand-rolled IOKit matching dicts in src/libsystem/iokit.zig
+  - replace the hand-rolled IOKit matching dicts in src/iokit/iokit.zig
     with real CFMutableDictionaryRef now that CFDictionary builds
   - CFRunLoop/CFMachPort once mach_port_allocate + complex descriptors exist
 - VFS follow-ups: openat/cwd, getdirentries64, vnode write path when a

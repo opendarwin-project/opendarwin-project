@@ -105,47 +105,169 @@ fn resolveSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
 
 const MAX_MAPPED_SEGMENTS = 32;
 const ExtraMap = struct { va: u64, pa: u64, len: u64, prot: mmu.Prot };
-const FossResolverCtx = struct { symbols: []const macho.Symbol };
 
-fn resolveFossSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
-    _ = ordinal;
-    const rc: *const FossResolverCtx = @ptrCast(@alignCast(ctx.?));
-    for (rc.symbols) |sym| {
+const FossResolverCtx = struct { tables: []const []const macho.Symbol };
+
+fn fossSymbolValue(symbols: []const macho.Symbol, name: []const u8) ?u64 {
+    for (symbols) |sym| {
         if (sym.kind != .external) continue;
         if (std.mem.eql(u8, sym.name, name) or
             (sym.name.len == name.len + 1 and sym.name[0] == '_' and std.mem.eql(u8, sym.name[1..], name))) return sym.value;
     }
+    return null;
+}
+
+fn findFossSymbol(ctx: *const FossResolverCtx, name: []const u8) ?u64 {
+    for (ctx.tables) |symbols| {
+        if (fossSymbolValue(symbols, name)) |v| return v;
+    }
+    return null;
+}
+
+fn resolveFossSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
+    _ = ordinal;
+    const rc: *const FossResolverCtx = @ptrCast(@alignCast(ctx.?));
+    if (findFossSymbol(rc, name)) |v| return v;
     uart.print("opendarwin: unresolved FOSS dylib symbol: ");
     uart.print(name);
     uart.print("\n");
     return null;
 }
 
+fn printLoadErr(prefix: []const u8, err: anyerror) void {
+    uart.print(prefix);
+    uart.print(@errorName(err));
+    const unresolved = macho.lastUnresolvedSymbol();
+    if (unresolved.len != 0) {
+        uart.print(" (");
+        uart.print(unresolved);
+        uart.print(")");
+    }
+    uart.print("\n");
+}
+
+fn installNameQueuedOrLoaded(names: []const []const u8, count: usize, name: []const u8) bool {
+    for (names[0..count]) |existing| {
+        if (std.mem.eql(u8, existing, name)) return true;
+    }
+    return false;
+}
+
 fn spawnZigSmokeFromFat() bool {
-    uart.print("opendarwin: zig-smoke: loading libSystem\n");
+    const max_dylibs = 8;
+    var queue_install: [max_dylibs][]const u8 = undefined;
+    var queue_path: [max_dylibs][]const u8 = undefined;
+    var queue_len: usize = 0;
 
-    var dylib_regions: [8]mmu.Region = undefined;
-    var dylib_regions_used: usize = 0;
-    const dylib_result = macho.loadPath("usr/lib/libSystem.B.dylib", &dylib_regions, &dylib_regions_used, .{}) catch |err| {
-        uart.print("opendarwin: FOSS libSystem load failed: ");
-        uart.print(@errorName(err));
-        const unresolved = macho.lastUnresolvedSymbol();
-        if (unresolved.len != 0) {
-            uart.print(" (");
-            uart.print(unresolved);
-            uart.print(")");
+    uart.print("opendarwin: zig-smoke: reading MAIN LC_LOAD_DYLIB\n");
+    var main_deps: [max_dylibs][]const u8 = undefined;
+    const main_dep_count = macho.listNeededDylibs("MAIN", &main_deps) catch |err| {
+        printLoadErr("opendarwin: MAIN dylib list failed: ", err);
+        return false;
+    };
+    if (main_dep_count == 0) {
+        uart.print("opendarwin: MAIN has no LC_LOAD_DYLIB entries\n");
+        return false;
+    }
+    for (main_deps[0..main_dep_count]) |install| {
+        if (installNameQueuedOrLoaded(queue_install[0..], queue_len, install)) continue;
+        if (queue_len >= max_dylibs) {
+            uart.print("opendarwin: too many MAIN dylib deps\n");
+            return false;
         }
+        queue_install[queue_len] = install;
+        queue_path[queue_len] = macho.rootfsPathForInstallName(install);
+        queue_len += 1;
+    }
+
+    var all_regions: [32]mmu.Region = undefined;
+    var all_regions_used: usize = 0;
+    var loaded_install: [max_dylibs][]const u8 = undefined;
+    var loaded_slide: [max_dylibs]u64 = undefined;
+    var loaded_region_start: [max_dylibs]usize = undefined;
+    var loaded_region_count: [max_dylibs]usize = undefined;
+    var symbol_tables: [max_dylibs][]const macho.Symbol = undefined;
+    var pending_binds: [max_dylibs]macho.PendingBind = undefined;
+    var loaded_count: usize = 0;
+
+    var qi: usize = 0;
+    while (qi < queue_len) : (qi += 1) {
+        const install = queue_install[qi];
+        const path = queue_path[qi];
+        if (installNameQueuedOrLoaded(loaded_install[0..], loaded_count, install)) continue;
+
+        uart.print("opendarwin: zig-smoke: loading ");
+        uart.print(path);
         uart.print("\n");
+
+        var dylib_regions: [8]mmu.Region = undefined;
+        var dylib_regions_used: usize = 0;
+        const dylib_result = macho.loadPath(path, &dylib_regions, &dylib_regions_used, .{ .defer_binding = true }) catch |err| {
+            printLoadErr("opendarwin: FOSS dylib load failed: ", err);
+            return false;
+        };
+        if (all_regions_used + dylib_regions_used > all_regions.len or loaded_count >= max_dylibs) {
+            uart.print("opendarwin: zig-smoke: too many dylib regions\n");
+            return false;
+        }
+
+        loaded_install[loaded_count] = install;
+        loaded_slide[loaded_count] = dylib_result.slide;
+        loaded_region_start[loaded_count] = all_regions_used;
+        loaded_region_count[loaded_count] = dylib_regions_used;
+        symbol_tables[loaded_count] = dylib_result.external_symbols;
+        pending_binds[loaded_count] = dylib_result.pending_bind orelse {
+            uart.print("opendarwin: zig-smoke: missing pending_bind\n");
+            return false;
+        };
+        for (dylib_regions[0..dylib_regions_used]) |r| {
+            all_regions[all_regions_used] = r;
+            all_regions_used += 1;
+        }
+        loaded_count += 1;
+
+        var nested: [max_dylibs][]const u8 = undefined;
+        const nested_count = macho.listNeededDylibs(path, &nested) catch |err| {
+            printLoadErr("opendarwin: nested dylib list failed: ", err);
+            return false;
+        };
+        for (nested[0..nested_count]) |dep| {
+            if (std.mem.eql(u8, dep, install)) continue;
+            if (installNameQueuedOrLoaded(loaded_install[0..], loaded_count, dep)) continue;
+            if (installNameQueuedOrLoaded(queue_install[0..], queue_len, dep)) continue;
+            if (queue_len >= max_dylibs) {
+                uart.print("opendarwin: too many nested dylib deps\n");
+                return false;
+            }
+            queue_install[queue_len] = dep;
+            queue_path[queue_len] = macho.rootfsPathForInstallName(dep);
+            queue_len += 1;
+        }
+    }
+
+    if (loaded_count == 0) {
+        uart.print("opendarwin: zig-smoke: no dylibs loaded\n");
+        return false;
+    }
+
+    var resolver_ctx = FossResolverCtx{ .tables = symbol_tables[0..loaded_count] };
+
+    for (0..loaded_count) |di| {
+        macho.applyPendingBind(pending_binds[di], resolveFossSymbol, &resolver_ctx) catch |err| {
+            uart.print("opendarwin: bind failed for ");
+            uart.print(loaded_install[di]);
+            uart.print(": ");
+            printLoadErr("", err);
+            return false;
+        };
+    }
+
+    const return_entry = findFossSymbol(&resolver_ctx, "exit") orelse {
+        uart.print("opendarwin: FOSS libSystem lacks exit\n");
         return false;
     };
+
     uart.print("opendarwin: zig-smoke: loading MAIN\n");
-
-    var resolver_ctx = FossResolverCtx{ .symbols = dylib_result.external_symbols };
-    const return_entry = resolveFossSymbol(&resolver_ctx, 0, "opendarwin_user_return") orelse {
-        uart.print("opendarwin: FOSS libSystem lacks return trampoline\n");
-        return false;
-    };
-
     var main_regions: [8]mmu.Region = undefined;
     var main_regions_used: usize = 0;
     const main_result = macho.loadPath("MAIN", &main_regions, &main_regions_used, .{
@@ -155,20 +277,12 @@ fn spawnZigSmokeFromFat() bool {
         // PIE linked at 0x1_0000_0000: run at preferred VAs (see LoadOptions).
         .link_at_preferred_va = true,
     }) catch |err| {
-        uart.print("opendarwin: zig-smoke load failed: ");
-        uart.print(@errorName(err));
-        const unresolved = macho.lastUnresolvedSymbol();
-        if (unresolved.len != 0) {
-            uart.print(" (");
-            uart.print(unresolved);
-            uart.print(")");
-        }
-        uart.print("\n");
+        printLoadErr("opendarwin: zig-smoke load failed: ", err);
         return false;
     };
-    uart.print("opendarwin: libSystem slide=");
-    uart.printHex(dylib_result.slide);
-    uart.print(" MAIN slide=");
+    uart.print("opendarwin: loaded ");
+    uart.printHex(@as(u64, @intCast(loaded_count)));
+    uart.print(" dylibs; MAIN slide=");
     uart.printHex(main_result.slide);
     uart.print("\n");
     uart.print("opendarwin: zig-smoke: spawning task\n");
@@ -210,15 +324,20 @@ fn spawnZigSmokeFromFat() bool {
     sched.setInitialRegister(idx, 3, stack_pa + 16);
     sched.setInitialRegister(idx, 30, return_entry);
     const table = sched.taskTable(idx);
-    for (dylib_regions[0..dylib_regions_used]) |r| {
-        mmu.mapPages(table, r.pa, r.pa, r.len, r.prot);
-        mmu.mapPages(table, r.pa -% dylib_result.slide, r.pa, r.len, r.prot);
+    for (0..loaded_count) |di| {
+        const slide = loaded_slide[di];
+        const start = loaded_region_start[di];
+        const count = loaded_region_count[di];
+        for (all_regions[start .. start + count]) |r| {
+            mmu.mapPages(table, r.pa, r.pa, r.len, r.prot);
+            mmu.mapPages(table, r.pa -% slide, r.pa, r.len, r.prot);
+        }
     }
     for (main_regions[0..main_regions_used]) |r| {
         mmu.mapPages(table, r.pa -% main_result.slide, r.pa, r.len, r.prot);
     }
 
-    uart.print("opendarwin: zig-smoke + FOSS libSystem loaded and spawned\n");
+    uart.print("opendarwin: zig-smoke + FOSS dylibs loaded and spawned\n");
     return true;
 }
 
