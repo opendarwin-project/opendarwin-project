@@ -19,6 +19,10 @@
             .url = "git+https://github.com/ianprime0509/zig-xml.git#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
             .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
+        .corefoundation = .{
+            .url = "git+https://github.com/swiftlang/swift-corelibs-foundation?ref=swift-5.1.5-RELEASE#4cd3bf083b4705d25ac76ef8d038a06bc586265a",
+            .hash = "N-V-__8AAKRqHQGd4eGkiP8lLgKhZzZG7V-mYcKKeQIFDndu",
+        },
     },
     .paths = .{
         "build.zig",

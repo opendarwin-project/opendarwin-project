@@ -1,6 +1,12 @@
 const std = @import("std");
 
-fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode, rootfs_path: ?[]const u8) void {
+fn addKernel(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    rootfs_path: ?[]const u8,
+    /// When set, qemu waits for this step before booting (smoke rootfs rebuild).
+    rootfs_depend: ?*std.Build.Step,
+) void {
     const kernel_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
         .os_tag = .freestanding,
@@ -80,9 +86,10 @@ fn addKernel(b: *std.Build, optimize: std.builtin.OptimizeMode, rootfs_path: ?[]
 
     // -Drootfs=<path> attaches a raw disk image as a virtio-mmio block
     // device (see drivers/virtio_blk.zig / devicetree.zig for the kernel
-    // side). Not wired in by default since the image is host-prepared
-    // (tools/make_rootfs.sh) and embeds host-specific content.
+    // side). Passing -Dmain=<name> without -Drootfs implies the smoke
+    // image at zig-out/zig-smoke-rootfs.img (rebuilt first).
     if (rootfs_path) |path| {
+        if (rootfs_depend) |dep| qemu_cmd.step.dependOn(dep);
         qemu_cmd.addArgs(&.{
             "-drive",
             b.fmt("file={s},if=none,format=raw,id=rootfs", .{path}),
@@ -205,6 +212,11 @@ const UserlandProgram = struct {
     needs_skylight: bool = false,
 };
 
+const BuiltUserland = struct {
+    meta: UserlandProgram,
+    exe: *std.Build.Step.Compile,
+};
+
 const userland_programs = [_]UserlandProgram{
     .{
         .name = "zig-smoke",
@@ -305,6 +317,149 @@ fn addSkyLight(b: *std.Build, optimize: std.builtin.OptimizeMode, libsystem: *st
     return lib;
 }
 
+// CoreFoundation: upstream swift-corelibs-foundation C sources (fetched via
+// build.zig.zon, unmodified) compiled for the guest against our own libSystem.
+//
+// Configuration is DEPLOYMENT_TARGET_LINUX ("no Apple userland": no ObjC, no
+// Swift runtime, no ICU) on an aarch64-macos triple, reconciled by the force-
+// included src/corefoundation/cf_prefix.h and the shim headers next to it.
+// This is the tier that CFDictionary needs - enough to replace the ad-hoc
+// IOKit matching-dictionary code with real CFDictionaryRef/CFStringRef/
+// CFNumberRef objects.  Higher tiers (CFDate, CFURL, CFPropertyList,
+// CFRunLoop) are deliberately left out; see docs/corefoundation.md.
+const corefoundation_sources = [_][]const u8{
+    "Base.subproj/CFBase.c",
+    "Base.subproj/CFRuntime.c",
+    "Base.subproj/CFPlatform.c",
+    "Base.subproj/CFSortFunctions.c",
+    "Base.subproj/CFFileUtilities.c",
+    "Base.subproj/CFUtilities.c",
+    "Collections.subproj/CFArray.c",
+    "Collections.subproj/CFBag.c",
+    "Collections.subproj/CFBasicHash.c",
+    "Collections.subproj/CFData.c",
+    "Collections.subproj/CFDictionary.c",
+    "Collections.subproj/CFSet.c",
+    "Collections.subproj/CFStorage.c",
+    "String.subproj/CFString.c",
+    "String.subproj/CFStringScanner.c",
+    "String.subproj/CFStringEncodings.c",
+    "String.subproj/CFBurstTrie.c",
+    "String.subproj/CFCharacterSet.c",
+    "StringEncodings.subproj/CFStringEncodingConverter.c",
+    "StringEncodings.subproj/CFStringEncodingDatabase.c",
+    "StringEncodings.subproj/CFBuiltinConverters.c",
+    "StringEncodings.subproj/CFPlatformConverters.c",
+    "StringEncodings.subproj/CFUniChar.c",
+    "StringEncodings.subproj/CFUnicodeDecomposition.c",
+    "StringEncodings.subproj/CFUnicodePrecomposition.c",
+    "NumberDate.subproj/CFNumber.c",
+    "NumberDate.subproj/CFDate.c",
+    "Error.subproj/CFError.c",
+    "URL.subproj/CFURL.c",
+    "URL.subproj/CFURLAccess.c",
+    "Parsing.subproj/CFBinaryPList.c",
+    "Parsing.subproj/CFPropertyList.c",
+    "Parsing.subproj/CFOldStylePList.c",
+};
+
+const corefoundation_subprojs = [_][]const u8{
+    "AppServices.subproj",     "Base.subproj",       "Collections.subproj", "Error.subproj",
+    "Locale.subproj",          "NumberDate.subproj", "Parsing.subproj",     "PlugIn.subproj",
+    "Preferences.subproj",     "RunLoop.subproj",    "Stream.subproj",      "String.subproj",
+    "StringEncodings.subproj", "URL.subproj",
+};
+
+fn addCoreFoundation(b: *std.Build, optimize: std.builtin.OptimizeMode) ?*std.Build.Step.Compile {
+    const upstream = b.lazyDependency("corefoundation", .{}) orelse return null;
+    const cf_root = upstream.path("CoreFoundation");
+
+    // CF includes its own headers as <CoreFoundation/CFFoo.h>, but upstream
+    // keeps them scattered across the *.subproj directories.  Stage a flat
+    // CoreFoundation/ include tree with a WriteFiles step.
+    const headers = b.addWriteFiles();
+    for (corefoundation_subprojs) |sub| {
+        _ = headers.addCopyDirectory(
+            upstream.path(b.fmt("CoreFoundation/{s}", .{sub})),
+            "CoreFoundation",
+            .{ .include_extensions = &.{".h"} },
+        );
+    }
+    // swift-corelibs ships its own TargetConditionals.h (and umbrella header)
+    // under Base.subproj/SwiftRuntime; CF includes them as <CoreFoundation/...>.
+    _ = headers.addCopyDirectory(
+        upstream.path("CoreFoundation/Base.subproj/SwiftRuntime"),
+        "CoreFoundation",
+        .{ .include_extensions = &.{".h"} },
+    );
+
+    const cf_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+        .abi = .none,
+    });
+    const mod = b.createModule(.{
+        .target = cf_target,
+        .optimize = optimize,
+        .link_libc = false,
+    });
+
+    var flags = std.ArrayList([]const u8).empty;
+    flags.appendSlice(b.allocator, &.{
+        "-DCF_BUILDING_CF=1",
+        "-DDEPLOYMENT_TARGET_LINUX=1",
+        "-DDEPLOYMENT_ENABLE_LIBDISPATCH=1",
+        // No linker-synthesised __UNICODE segment yet: CF loads its Unicode
+        // tables from CharacterSets/ files instead of a Mach-O section.
+        "-DUSE_MACHO_SEGMENT=0",
+        "-w",
+        "-std=gnu11",
+        // Debug builds otherwise pull __ubsan_handle_* out of compiler-rt,
+        // which the guest has no runtime for.
+        "-fno-sanitize=undefined",
+        "-include",
+        b.pathFromRoot("src/corefoundation/cf_prefix.h"),
+    }) catch @panic("OOM");
+
+    mod.addIncludePath(b.path("src/corefoundation/shims"));
+    mod.addIncludePath(headers.getDirectory());
+    mod.addIncludePath(cf_root);
+    for (corefoundation_subprojs) |sub| {
+        mod.addIncludePath(upstream.path(b.fmt("CoreFoundation/{s}", .{sub})));
+    }
+    for (corefoundation_sources) |src| {
+        mod.addCSourceFile(.{
+            .file = upstream.path(b.fmt("CoreFoundation/{s}", .{src})),
+            .flags = flags.items,
+        });
+    }
+    mod.addCSourceFile(.{
+        .file = b.path("src/corefoundation/cf_stubs.c"),
+        .flags = flags.items,
+    });
+
+    const lib = b.addLibrary(.{
+        .name = "CoreFoundationCore",
+        .root_module = mod,
+        .linkage = .static,
+    });
+
+    const install = b.addInstallArtifact(lib, .{});
+    const step = b.step("corefoundation", "Build the CoreFoundation container tier (CFDictionary/CFString/CFNumber) for aarch64-macos");
+    step.dependOn(&install.step);
+
+    // Report what libSystem still owes CF: the remaining bring-up work is
+    // exactly this list (see docs/corefoundation.md).
+    const gap = b.addSystemCommand(&.{ "python3", "tools/symbol_gap.py", "--provider", "zig-out/lib/libSystem.B.dylib", "--exit-zero" });
+    gap.addArtifactArg(lib);
+    gap.stdio = .inherit;
+    const gap_step = b.step("cf-gap", "List the libSystem symbols CoreFoundation still needs");
+    gap_step.dependOn(&install.step);
+    gap_step.dependOn(&gap.step);
+
+    return lib;
+}
+
 // Host-side unit tests for the compositor core (pure pixel math, no Mach).
 fn addSkyLightTests(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     const mod = b.createModule(.{
@@ -317,38 +472,47 @@ fn addSkyLightTests(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     step.dependOn(&b.addRunArtifact(t).step);
 }
 
-fn addZigSmokeRootfs(b: *std.Build, main_name: []const u8) void {
-    var args = std.ArrayList([]const u8).empty;
-    args.appendSlice(b.allocator, &.{
-        "python3",
-        "tools/make_fat32.py",
-        "zig-out/zig-smoke-rootfs.img",
-        "--multi",
-        "usr/lib/libSystem.B.dylib=zig-out/lib/libSystem.B.dylib",
-        "System/Library/PrivateFrameworks/SkyLight.framework/SkyLight=zig-out/lib/SkyLight",
-    }) catch @panic("OOM");
+const smoke_rootfs_basename = "zig-smoke-rootfs.img";
 
-    // Every userland program ships in the image; -Dmain= only decides which
-    // one the kernel autoruns as MAIN (kmain.zig reads that fixed name).
-    var main_source: ?[]const u8 = null;
-    for (userland_programs) |p| {
-        const host_path = b.fmt("zig-out/userland/{s}", .{p.name});
-        args.append(b.allocator, b.fmt("{s}={s}", .{ p.guest_path, host_path })) catch @panic("OOM");
-        if (std.mem.eql(u8, p.name, main_name)) main_source = host_path;
+fn addZigSmokeRootfs(
+    b: *std.Build,
+    main_name: []const u8,
+    programs: []const BuiltUserland,
+    libsystem: *std.Build.Step.Compile,
+    skylight: *std.Build.Step.Compile,
+) *std.Build.Step {
+    // Wire real artifact LazyPaths into make_fat32 so -Dmain= changes the
+    // Run step's input hash (hardcoded zig-out/... strings do not).
+    const make_img = b.addSystemCommand(&.{ "python3", b.pathFromRoot("tools/make_fat32.py") });
+    const image = make_img.addOutputFileArg(smoke_rootfs_basename);
+    make_img.addArg("--multi");
+    make_img.addPrefixedFileArg("usr/lib/libSystem.B.dylib=", libsystem.getEmittedBin());
+    make_img.addPrefixedFileArg(
+        "System/Library/PrivateFrameworks/SkyLight.framework/SkyLight=",
+        skylight.getEmittedBin(),
+    );
+
+    var main_exe: ?*std.Build.Step.Compile = null;
+    for (programs) |p| {
+        make_img.addPrefixedFileArg(b.fmt("{s}=", .{p.meta.guest_path}), p.exe.getEmittedBin());
+        if (std.mem.eql(u8, p.meta.name, main_name)) main_exe = p.exe;
     }
-    const main_path = main_source orelse {
+    const chosen = main_exe orelse {
         std.debug.print("unknown -Dmain={s}; known programs:", .{main_name});
-        for (userland_programs) |p| std.debug.print(" {s}", .{p.name});
+        for (programs) |p| std.debug.print(" {s}", .{p.meta.name});
         std.debug.print("\n", .{});
         @panic("invalid -Dmain");
     };
-    args.append(b.allocator, b.fmt("MAIN={s}", .{main_path})) catch @panic("OOM");
+    // Kernel autoruns this fixed guest name (see kmain.zig).
+    make_img.addPrefixedFileArg("MAIN=", chosen.getEmittedBin());
 
-    const make_img = b.addSystemCommand(args.items);
-    make_img.step.dependOn(b.getInstallStep());
-
-    const step = b.step("zig-smoke-rootfs", b.fmt("Build a FAT32 QEMU rootfs with every userland program (MAIN = {s}, override with -Dmain=)", .{main_name}));
-    step.dependOn(&make_img.step);
+    const install_img = b.addInstallFile(image, smoke_rootfs_basename);
+    const step = b.step(
+        "zig-smoke-rootfs",
+        b.fmt("Build a FAT32 QEMU rootfs with every userland program (MAIN = {s})", .{main_name}),
+    );
+    step.dependOn(&install_img.step);
+    return step;
 }
 
 pub fn build(b: *std.Build) void {
@@ -357,15 +521,34 @@ pub fn build(b: *std.Build) void {
 
     _ = b.dependency("prism", .{ .target = target, .optimize = optimize });
 
-    const rootfs_path = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
-    const main_name = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke)") orelse "zig-smoke";
+    const rootfs_opt = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
+    // null when unset — so `qemu -Dmain=fb-smoke` can imply the smoke rootfs.
+    const main_opt = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke)");
+    const main_name = main_opt orelse "zig-smoke";
 
-    addKernel(b, optimize, rootfs_path);
     addPrepareSharedCacheTool(b, optimize);
     addDarwinWindowSmoke(b, optimize);
     const libsystem = addMinimalLibSystem(b, optimize);
     const skylight = addSkyLight(b, optimize, libsystem);
-    for (userland_programs) |p| _ = addUserlandProgram(b, optimize, p, libsystem, skylight);
+    _ = addCoreFoundation(b, optimize);
+
+    var programs: [userland_programs.len]BuiltUserland = undefined;
+    for (userland_programs, 0..) |p, i| {
+        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, libsystem, skylight) };
+    }
     addSkyLightTests(b, optimize);
-    addZigSmokeRootfs(b, main_name);
+    const rootfs_step = addZigSmokeRootfs(b, main_name, programs[0..], libsystem, skylight);
+
+    const smoke_img_path = b.fmt("{s}/{s}", .{ b.install_path, smoke_rootfs_basename });
+    // -Dmain without -Drootfs => rebuild smoke image and attach it to qemu.
+    // -Drootfs=zig-out/zig-smoke-rootfs.img also waits on that rebuild.
+    const qemu_rootfs: ?[]const u8 = rootfs_opt orelse if (main_opt != null) smoke_img_path else null;
+    const qemu_rootfs_dep: ?*std.Build.Step = blk: {
+        const path = qemu_rootfs orelse break :blk null;
+        if (std.mem.endsWith(u8, path, smoke_rootfs_basename) or main_opt != null)
+            break :blk rootfs_step;
+        break :blk null;
+    };
+
+    addKernel(b, optimize, qemu_rootfs, qemu_rootfs_dep);
 }

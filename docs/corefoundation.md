@@ -7,26 +7,118 @@ almost entirely POSIX + pthreads + malloc + a handful of Mach calls we already
 have trap wrappers for. The work is not "write CF", it is "close a symbol gap",
 which is a mechanical loop (see *Workflow* below).
 
-## Which CF sources
+## Which CF sources (settled: swift-corelibs, 5.1.5)
 
-Two candidates:
+`build.zig.zon` pins:
 
-| source | license | notes |
-| --- | --- | --- |
-| [`swift-corelibs-foundation/CoreFoundation`](https://github.com/swiftlang/swift-corelibs-foundation/tree/main/CoreFoundation) | APSL 2.0 | **Recommended.** Same CF-1153-era code, but already de-Apple-ised: builds on Linux/Windows with `DEPLOYMENT_RUNTIME_C`, has explicit non-Darwin branches in `CFPlatform.c`, no ObjC bridging required, and CMake glue we can ignore. |
-| [`apple-oss-distributions/CF`](https://github.com/apple-oss-distributions/CF) | APSL 2.0 | Pristine macOS CF, but assumes objc4, dyld internals, `os/*` private headers, and libxpc in places. More faithful, much more yak. |
+```
+.corefoundation = git+https://github.com/swiftlang/swift-corelibs-foundation
+                  ?ref=swift-5.1.5-RELEASE
+```
 
-Start from swift-corelibs. Compile it with `zig cc` (same aarch64-macos-none
-target as the rest of userland) so we keep one toolchain.
+Why that exact source, having tried the alternatives:
 
-Do **not** pretend to be Linux: define a real platform flavor. CF's platform
-branches are `DEPLOYMENT_TARGET_MACOSX` / `..._LINUX` / `..._FREEBSD`; the
-honest configuration for us is "Mach-O + Mach + BSD syscalls, but no Apple
-userland services", i.e. `TARGET_OS_MAC` with the XPC/notify/Security/ICU
-call sites disabled. Practically that means a small
-`src/corefoundation/CFPlatform_OpenDarwin.c` (or a patch overlay) holding our
-overrides, plus a `-DCF_OPENDARWIN=1` guard added where upstream reaches for
-something we do not have.
+| candidate | verdict |
+| --- | --- |
+| swift-corelibs **6.0.3** (`Sources/CoreFoundation`) | **Rejected.** `DEPLOYMENT_RUNTIME_C` is gone; `CFRuntime.c` allocates with `swift_allocObject` and retains with `swift_retain`/`swift_release` unconditionally. Adopting it means adopting the Swift runtime. |
+| **apple-oss-distributions/CF (CF-1153)** | Rejected for now. Pristine macOS CF, but wants `auto_zone.h` (ObjC GC), CrashReporterClient, and the Apple SDK's private headers before the first file compiles. |
+| swift-corelibs **5.1.5** (`CoreFoundation/`) | **Chosen.** Same CF-1153 lineage, still has the non-Swift C refcounting path, and compiles clean with a force-included prefix and six shim headers. |
+
+The configuration is deliberately a hybrid that no upstream `DEPLOYMENT_TARGET_*`
+describes, because it is exactly what OpenDarwin is:
+
+- `-DDEPLOYMENT_TARGET_LINUX=1` — "not Apple's userland": no ObjC runtime, no
+  Swift runtime, no ICU, no CFNetwork, C refcounting.
+- target triple `aarch64-macos-none` — so `TARGET_OS_MAC` stays 1 and CF's
+  Mach-O paths (including the `__UNICODE` segment trick) remain live.
+
+`src/corefoundation/cf_prefix.h` is force-included to reconcile the two, and
+`src/corefoundation/shims/` shadows headers Apple has but we do not. Upstream
+sources are used byte-for-byte; nothing is patched.
+
+| shim | why |
+| --- | --- |
+| `objc/{objc,message,runtime,NSObject,objc-auto,objc-sync}.h` | empty — shadow the SDK's real ObjC headers, which conflict with CF's own placeholder `id`/`Class` typedefs |
+| `asl.h` | no syslogd; `CFLog`'s ASL path becomes no-ops and the stderr path does the work |
+| `vproc.h` | no launchd |
+| `mach/mach_vm.h` | zig ships no `mach_vm.h`; declares the three calls `CFUtilities.c` uses |
+| `mach-o/ldsyms.h` | ditto for `_mh_dylib_header` |
+| `unicode/uchar.h` | CF's only ICU reference in this tier is `u_charDigitValue` |
+
+The prefix header itself supplies just three things: `DECLARE_STATIC_CLASS_REF`
+(defined only in the Swift branch upstream), a pre-include of
+`ForSwiftFoundationOnly.h` (for `__CFSwiftBridge` and the `_CFThread*`
+typedefs that non-Darwin code names inside `CF_IS_SWIFT()`-dead branches), and
+a constant-zero `__CFDoExternRefOperation` (the ObjC external-refcount side
+table).
+
+## What builds today
+
+```sh
+zig build corefoundation   # -> zig-out/lib/libCoreFoundationCore.a
+zig build cf-gap           # -> what libSystem still owes CF
+```
+
+24 upstream translation units compile clean and produce **327 exported `CF*`
+symbols**, including the reason for doing this at all:
+
+`CFDictionaryCreate` / `CFDictionaryCreateMutable` / `CFDictionarySetValue` /
+`CFDictionaryGetValue` / `CFDictionaryApplyFunction`, `CFStringCreateWithCString`,
+`CFNumberCreate`, `CFBooleanGetTypeID`, `CFEqual`, `CFHash`, `CFRetain`/`CFRelease`
+— i.e. everything needed to make `IOServiceMatching()` return a real
+`CFMutableDictionaryRef` instead of the current ad-hoc struct, and to hand real
+CF property dictionaries to the kernel's IOKit registry.
+
+The tier is: `CFBase`, `CFRuntime`, `CFPlatform`, `CFSortFunctions`,
+`CFFileUtilities`, `CFUtilities`, `CFArray`, `CFBag`, `CFBasicHash`, `CFData`,
+`CFDictionary`, `CFSet`, `CFStorage`, `CFString`, `CFCharacterSet`,
+`CFStringEncodingConverter`, `CFStringEncodingDatabase`, `CFBuiltinConverters`,
+`CFPlatformConverters`, `CFUniChar`, `CFUnicodeDecomposition`,
+`CFUnicodePrecomposition`, `CFNumber`, `CFError`.
+
+It is a **static** library on purpose: the dylib cannot link until the symbol
+gap below closes, and a static archive is an honest artifact that proves the
+compile side is done.
+
+## Remaining gap (from `zig build cf-gap`, 197 symbols)
+
+- **77 `CF*`** from tiers we left out (`CFDate`, `CFTimeZone`, `CFURL`,
+  `CFPropertyList`, `CFLocale`, `CFNumberFormatter`, `CFBundle`, `CFRunLoop`,
+  the `__CF*Class` runtime-class table entries). Each is either "add the file"
+  or "stub the class-table slot"; `CFLocale`/`CFNumberFormatter` should be
+  stubbed, not built, since they are the ICU ones.
+- **~120 libSystem symbols**, and the grouping is exactly as predicted:
+  - *string/mem (16)*: `snprintf`/`vsnprintf`/`asprintf` + `_l` variants,
+    `strcmp`/`strchr`/`strdup`/`strtol`/`qsort`/`memcmp`/`memchr`
+  - *stdio (9)*: `fprintf`, `fflush`, `opendir`/`readdir`/`closedir`, `stat`
+  - *pthread (10)*: `pthread_key_create`/`getspecific`/`setspecific`,
+    `pthread_mutex_lock`/`unlock`, `pthread_main_np`, `pthread_atfork`
+  - *locking (7)*: `os_unfair_lock_*`, `OSSpinLock*`, `OSAtomic*`
+  - *malloc (12)*: `calloc`, `malloc_good_size`, the `malloc_zone_*` family,
+    `mach_vm_allocate`/`deallocate`/`region`, `vm_page_size`
+  - *dyld (8)*: `_dyld_image_count`/`get_image_header`/`vmaddr_slide`,
+    `getsectbynamefromheader_64`, `dlopen`/`dlsym`, `_NSGetArgc`/`Argv`
+  - *misc (48)*: blocks runtime (`_Block_copy`/`_NSConcrete*Block`),
+    `__*_chk` fortified variants, `__stderrp`, `pow`/`fmod`/`modf`,
+    `getpwuid`, and the `section$start$__UNICODE$*` markers below
+
+### The `__UNICODE` segment
+
+`CFUniChar.c` hard-defines `USE_MACHO_SEGMENT 1` whenever `TARGET_OS_MAC`, so
+the Unicode tables are expected *inside the dylib* as a `__UNICODE` segment,
+referenced through linker-synthesised `section$start$__UNICODE$__csbitmaps`
+style symbols. That is good news — no runtime file loading — and upstream's own
+Darwin link line tells us exactly how to produce it:
+
+```
+-sectcreate __UNICODE __csbitmaps  CharacterSets/CFCharacterSetBitmaps.bitmap
+-sectcreate __UNICODE __properties CharacterSets/CFUniCharPropertyDatabase.data
+-sectcreate __UNICODE __data       CharacterSets/CFUnicodeData-L.mapping
+-segprot    __UNICODE r r
+```
+
+Those blobs ship in the dependency (`CoreFoundation/CharacterSets/`); wire the
+flags in when the target becomes a dylib.
 
 ## Source tiers (build them in this order)
 
@@ -104,16 +196,29 @@ order the tiers hit it:
 Notably absent from that list: ICU, notify, xpc, Security, objc. Keeping tiers
 0–4 means never linking them.
 
+## Kernel VFS (prerequisite for CF file I/O)
+
+Userspace `open`/`read`/`lseek`/`stat` now go through a minimal XNU/BSD-shaped
+VFS (`src/kernel/fs/vfs.zig` + `namei.zig`) with FAT as the first filesystem
+backend. The early boot loader still uses `fat.readFile` / `vfs.readFile`;
+libSystem's stdio path is live for absolute paths on the read-only rootfs.
+Still missing for CFFileUtilities / CFURL: `opendir`/`readdir` /
+`__getdirentries64`, `openat`, and a real cwd.
+
 ## Workflow
 
 `tools/symbol_gap.py` automates the loop:
 
 ```sh
-zig build                                   # (re)build libSystem + SkyLight
-zig cc -target aarch64-macos-none -c ...    # compile the CF tier you're on
+zig build cf-gap    # builds CF, prints the grouped list of missing symbols
+```
+
+or by hand against any objects/archives/dylibs:
+
+```sh
 ./tools/symbol_gap.py --provider zig-out/lib/libSystem.B.dylib \
                       --provider zig-out/lib/SkyLight \
-                      build/cf/*.o
+                      zig-out/lib/libCoreFoundationCore.a
 ```
 
 It prints the still-unresolved symbols grouped by subsystem (malloc / pthread /
@@ -121,10 +226,11 @@ mach / stdio / ICU / ...), so each iteration is "pick a group, implement it in
 `src/libsystem`, rerun". Exit status is non-zero while anything is missing, so
 it can become a CI/build step once CF is wired into `build.zig`.
 
-Suggested build integration when tier 0 compiles: an `addCoreFoundation()`
-mirroring `addSkyLight()`, producing
-`/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation` with the
-right install name, plus a `cf-smoke` entry in `userland_programs` that does
+Next build step, once the gap closes: turn `addCoreFoundation()`'s static
+library into a dylib installed at
+`/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation` (right
+install name + the `-sectcreate __UNICODE` flags above), plus a `cf-smoke`
+entry in `userland_programs` that does
 `CFStringCreateWithCString` → `CFStringGetCString` → `write(1, ...)` and a
 `CFDictionary` round trip. Select it as the boot binary with
 `zig build zig-smoke-rootfs -Dmain=cf-smoke`.

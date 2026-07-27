@@ -104,7 +104,7 @@ fn resolveSymbol(ctx: ?*anyopaque, ordinal: u8, name: []const u8) ?u64 {
 }
 
 const MAX_MAPPED_SEGMENTS = 32;
-const MAX_FOSS_DYLIB_SYMBOLS = 256;
+const MAX_FOSS_DYLIB_SYMBOLS = 512;
 const MAX_FOSS_BLOB = 2 * 1024 * 1024;
 const ExtraMap = struct { va: u64, pa: u64, len: u64, prot: mmu.Prot };
 const FossResolverCtx = struct { symbols: []const macho.Symbol };
@@ -167,7 +167,13 @@ fn spawnZigSmokeFromFat() bool {
 
     var main_regions: [8]mmu.Region = undefined;
     var main_regions_used: usize = 0;
-    const main_result = macho.load(main_bytes, &main_regions, &main_regions_used, resolveFossSymbol, &resolver_ctx) catch |err| {
+    const main_result = macho.loadWithOptions(main_bytes, &main_regions, &main_regions_used, .{
+        .resolver = resolveFossSymbol,
+        .resolver_ctx = &resolver_ctx,
+        .user_accessible = true,
+        // PIE linked at 0x1_0000_0000: run at preferred VAs (see LoadOptions).
+        .link_at_preferred_va = true,
+    }) catch |err| {
         uart.print("opendarwin: zig-smoke load failed: ");
         uart.print(@errorName(err));
         const unresolved = macho.lastUnresolvedSymbol();
@@ -375,7 +381,7 @@ export fn kmain() callconv(.c) noreturn {
         if (virtio_blk.init(found.virtio_blk_matches[0..found.virtio_blk_count])) {
             uart.print("opendarwin: virtio-blk device ready\n");
             if (fat.mount(virtio_blk.block())) {
-                uart.print("opendarwin: rootfs mounted (FAT)\n");
+                uart.print("opendarwin: rootfs mounted (VFS/FAT)\n");
                 rootfs_mounted = 1;
             } else {
                 uart.print("opendarwin: rootfs mount failed\n");

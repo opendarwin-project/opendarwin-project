@@ -58,7 +58,7 @@ def defined_symbols(path):
     syms = set()
     for line in nm(["-g", "-P", path]).splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] not in ("U", "u"):
+        if len(parts) >= 2 and parts[1] not in ("U", "u") and not parts[0].endswith(":"):
             syms.add(parts[0])
     return syms
 
@@ -69,8 +69,10 @@ def undefined_symbols(paths):
     for path in paths:
         for line in nm(["-u", "-P", path]).splitlines():
             parts = line.split()
-            if parts:
-                wants[parts[0]].add(path)
+            # Archives interleave "member.o:" header lines; skip them.
+            if len(parts) < 2 or parts[1] not in ("U", "u"):
+                continue
+            wants[parts[0]].add(path)
     return wants
 
 
@@ -85,19 +87,23 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="Mach-O objects/archives/dylibs to analyse")
     ap.add_argument("--provider", action="append", default=[], help="library that already provides symbols (repeatable)")
+    ap.add_argument("--exit-zero", action="store_true", help="always exit 0 (for use as a reporting build step)")
     ap.add_argument("--show-users", action="store_true", help="list which input file needs each symbol")
     args = ap.parse_args()
 
     provided = set()
     for p in args.provider:
         provided |= defined_symbols(p)
+    # Symbols defined by the analysed inputs themselves are satisfied too: a
+    # tier of CF .o files mostly resolves its own cross-references.
+    for i in args.inputs:
+        provided |= defined_symbols(i)
 
     missing = defaultdict(dict)
     total = 0
     for sym, users in sorted(undefined_symbols(args.inputs).items()):
         if sym in provided or sym in IGNORED:
             continue
-        # A symbol defined by one of the analysed inputs is satisfied too.
         missing[group_of(sym)][sym] = users
         total += 1
 
@@ -111,7 +117,7 @@ def main():
 
     print(f"\n{total} unresolved symbol(s) across {len(args.inputs)} input(s), "
           f"{len(provided)} provided by {len(args.provider)} library(ies)")
-    return 1 if total else 0
+    return 1 if total and not args.exit_zero else 0
 
 
 if __name__ == "__main__":
