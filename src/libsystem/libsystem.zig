@@ -69,6 +69,11 @@ const SYS_sigaction: usize = 46;
 const SYS_sigprocmask: usize = 48;
 const SYS_sigreturn: usize = 184;
 
+// Pull Darwin IOKitLib exports into libSystem.
+comptime {
+    _ = @import("iokit.zig");
+}
+
 fn darwinSyscall3(number: usize, arg0: usize, arg1: usize, arg2: usize) usize {
     return asm volatile (
         \\mov x16, %[number]
@@ -441,6 +446,19 @@ pub export fn _dyld_image_path_containing_address(addr: ?*const anyopaque) ?[*:0
     const p = @intFromPtr(addr orelse return null);
     if (p >= MAIN_IMAGE_BASE and p < MAIN_IMAGE_LIMIT) return "/MAIN\x00";
     return "/usr/lib/libSystem.B.dylib\x00";
+}
+
+// Mach-O mangles `export fn foo` to the asm symbol `_foo`, so the decls above
+// (whose Zig names already start with an underscore to look C-like) actually
+// emit one underscore too many: `pub export fn _dyld_image_path_containing_address`
+// becomes `__dyld_image_path_containing_address`, which is *not* what a C
+// caller references.  Alias the real C-level names here; `nm -u` on any client
+// (tools/symbol_gap.py) otherwise reports them as missing.
+comptime {
+    @export(&__availability_version_check, .{ .name = "_availability_version_check", .linkage = .strong });
+    @export(&_dyld_get_image_header_containing_address, .{ .name = "dyld_get_image_header_containing_address", .linkage = .strong });
+    @export(&_dyld_image_path_containing_address, .{ .name = "dyld_image_path_containing_address", .linkage = .strong });
+    @export(&__tlv_bootstrap, .{ .name = "_tlv_bootstrap", .linkage = .strong });
 }
 const MAX_TLV_RECORDS = 16;
 const MAX_TLV_THREADS = 64;

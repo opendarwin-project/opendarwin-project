@@ -46,6 +46,12 @@ Migration Path
 
 Next
 
-- Prism userspace present ABI against the bound conduit device
-- Richer IOKitPersonalities matching for out-of-tree kexts
+- Prism userspace present via Darwin IOKitLib — done
+  (`mach_host_self` / match / open / `IOConnectMapMemory` via mach_msg;
+  getInfo/present via XNU trap **100** `iokit_user_client_trap`).
+  See `docs/userspace-framebuffer-abi.md`.
+- Port prism-vk / prism-egl builds + WSI to aarch64-macos using Darwin
+  `platform.Surface` (software HAL first; Metal later)
+- Richer IOKitPersonalities / CF matching for out-of-tree kexts
 - Real IOWorkLoop / interrupt wiring for VSync
+- Optional Metal-compatible / IOSurface-shaped layer in Prism

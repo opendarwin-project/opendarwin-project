@@ -33,10 +33,18 @@ pub const SYS_ulock_wait2: u16 = 544;
 
 pub const MACH__kernelrpc_mach_vm_allocate_trap: u16 = 10;
 pub const MACH__kernelrpc_mach_vm_map_trap: u16 = 15;
-pub const MACH_mach_msg_trap: u16 = 31;
-pub const MACH_mach_msg_overwrite_trap: u16 = 32;
+pub const MACH__kernelrpc_mach_port_allocate_trap: u16 = 16;
+pub const MACH__kernelrpc_mach_port_deallocate_trap: u16 = 18;
 
+/// XNU mach_trap_table: mach_reply_port is 26 (37 is semaphore_wait_signal_trap).
+pub const MACH_mach_reply_port: u16 = 26;
 pub const MACH_thread_self_trap: u16 = 27;
 pub const MACH_task_self_trap: u16 = 28;
 pub const MACH_host_self_trap: u16 = 29;
-pub const MACH_mach_reply_port: u16 = 37;
+pub const MACH_mach_msg_trap: u16 = 31;
+pub const MACH_mach_msg_overwrite_trap: u16 = 32;
+pub const MACH_thread_get_special_reply_port: u16 = 50;
+
+/// XNU reserves traps 100–107 for IOKit. Trap 100 is iokit_user_client_trap
+/// (userspace: IOConnectTrap0…6).
+pub const MACH_iokit_user_client_trap: u16 = 100;

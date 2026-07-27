@@ -64,6 +64,8 @@ pub const Task = struct {
     task_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     thread_self_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     reply_port_name: types.mach_port_name_t = types.MACH_PORT_NULL,
+    /// Send right to the IOKit master port (from mach_host_self / IOMasterPort).
+    iokit_master_name: types.mach_port_name_t = types.MACH_PORT_NULL,
     /// The initial thread embeds its process state; later threads point at it.
     owned_process: Process,
     process: *Process,

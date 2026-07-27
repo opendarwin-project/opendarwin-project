@@ -7,6 +7,7 @@ const ipc_right = @import("../ipc/right.zig");
 const IpcKmsg = @import("../ipc/kmsg.zig").IpcKmsg;
 const MachMsgHeader = @import("../ipc/kmsg.zig").MachMsgHeader;
 const usercopy = @import("usercopy.zig");
+const iokit_server = @import("../iokit/mach_server.zig");
 
 const KERN_SUCCESS: u32 = 0;
 const KERN_INVALID_ADDRESS: u32 = 1;
@@ -35,8 +36,9 @@ const MACH_MSGH_BITS_COMPLEX: u32 = 0x80000000;
 
 const handler_type = *const fn (frame: *context.Frame) void;
 
-pub const table: [64]?handler_type = init: {
-    var t: [64]?handler_type = [_]?handler_type{null} ** 64;
+/// XNU mach_trap_table goes past 100 for IOKit; keep headroom through 107.
+pub const table: [128]?handler_type = init: {
+    var t: [128]?handler_type = [_]?handler_type{null} ** 128;
     t[numbers.MACH_thread_self_trap] = machThreadSelf;
     t[numbers.MACH_task_self_trap] = machTaskSelf;
     t[numbers.MACH_host_self_trap] = machHostSelf;
@@ -45,12 +47,13 @@ pub const table: [64]?handler_type = init: {
     t[numbers.MACH__kernelrpc_mach_vm_map_trap] = machVmMapTrap;
     t[numbers.MACH_mach_msg_trap] = machMsgTrap;
     t[numbers.MACH_mach_msg_overwrite_trap] = machMsgOverwriteTrap;
+    t[numbers.MACH_iokit_user_client_trap] = machIokitUserClientTrap;
     break :init t;
 };
 
 pub fn handle(frame: *context.Frame) void {
     const num = frame.x[16];
-    if (num >= 64) return;
+    if (num >= table.len) return;
     const handler = table[num] orelse return;
     handler(frame);
 }
@@ -64,11 +67,48 @@ fn machTaskSelf(frame: *context.Frame) void {
 }
 
 fn machHostSelf(frame: *context.Frame) void {
-    frame.x[0] = types.MACH_PORT_NULL;
+    const task = sched.currentTask(cpu.coreId());
+    frame.x[0] = iokit_server.ensureMasterSendRight(task);
 }
 
 fn machReplyPort(frame: *context.Frame) void {
     frame.x[0] = sched.currentTask(cpu.coreId()).reply_port_name;
+}
+
+/// XNU `iokit_user_client_trap` (trap 100). Userspace: IOConnectTrap0…6.
+/// Args: x0=connect, x1=index, x2…x7=p1…p6.
+fn machIokitUserClientTrap(frame: *context.Frame) void {
+    const connect_name: types.mach_port_name_t = @truncate(frame.x[0]);
+    const index: u32 = @truncate(frame.x[1]);
+    const p1 = frame.x[2];
+    const p2 = frame.x[3];
+    const p3 = frame.x[4];
+    const p4 = frame.x[5];
+    const p5 = frame.x[6];
+    const p6 = frame.x[7];
+
+    const task = sched.currentTask(cpu.coreId());
+    const looked = ipc_right.lookup(&task.ipc_space, connect_name) orelse {
+        frame.x[0] = @bitCast(@as(i64, @import("../iokit/types.zig").kIOReturnBadArgument));
+        return;
+    };
+    const port = looked.port orelse {
+        frame.x[0] = @bitCast(@as(i64, @import("../iokit/types.zig").kIOReturnBadArgument));
+        return;
+    };
+    const po = @import("../iokit/user_client.zig").asPortObject(port.ip_kobject) orelse {
+        frame.x[0] = @bitCast(@as(i64, @import("../iokit/types.zig").kIOReturnBadArgument));
+        return;
+    };
+    if (po.tag != .connect) {
+        frame.x[0] = @bitCast(@as(i64, @import("../iokit/types.zig").kIOReturnBadArgument));
+        return;
+    }
+    const uc = po.connect orelse {
+        frame.x[0] = @bitCast(@as(i64, @import("../iokit/types.zig").kIOReturnBadArgument));
+        return;
+    };
+    frame.x[0] = @bitCast(@as(i64, @import("../iokit/user_client.zig").trap(uc, index, p1, p2, p3, p4, p5, p6)));
 }
 
 fn targetIsCurrentTask(target: types.mach_port_name_t) bool {
@@ -149,6 +189,12 @@ fn machMsgSend(msg: u64, send_size: u32) u32 {
     const dest_port = dest.port orelse return MACH_SEND_INVALID_DEST;
     const right_type = dest.entry.typeOf();
     if (right_type != types.IE_BITS_TYPE_SEND and right_type != types.IE_BITS_TYPE_SEND_ONCE and right_type != types.IE_BITS_TYPE_RECEIVE) return MACH_SEND_INVALID_DEST;
+
+    // IOKit kobject ports are handled in-kernel (Darwin ipc_kobject_server style).
+    if (iokit_server.handleSend(dest_port, msg, send_size, header)) {
+        if (right_type == types.IE_BITS_TYPE_SEND_ONCE) _ = ipc_right.dealloc(&task.ipc_space, dest.name);
+        return MACH_MSG_SUCCESS;
+    }
 
     const kmsg = IpcKmsg.alloc(header) orelse return MACH_SEND_NO_BUFFER;
     const body_addr = msg + @sizeOf(MachMsgHeader);

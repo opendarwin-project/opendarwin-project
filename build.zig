@@ -193,49 +193,161 @@ fn addMinimalLibSystem(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.B
     return libsystem;
 }
 
-fn addZigDarwinSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode, libsystem: *std.Build.Step.Compile) *std.Build.Step.Compile {
-    const smoke_target = b.resolveTargetQuery(.{
+/// One guest userland program: built for aarch64-macos against our own
+/// libSystem (and optionally SkyLight), installed into zig-out/userland, and
+/// selectable as the rootfs MAIN via `-Dmain=<name>`.
+const UserlandProgram = struct {
+    name: []const u8,
+    source: []const u8,
+    description: []const u8,
+    /// Guest path inside the FAT rootfs.
+    guest_path: []const u8,
+    needs_skylight: bool = false,
+};
+
+const userland_programs = [_]UserlandProgram{
+    .{
+        .name = "zig-smoke",
+        .source = "src/userland/threads.zig",
+        .description = "a tiny aarch64-macos Zig executable linked to minimal libSystem",
+        .guest_path = "bin/zig-smoke",
+    },
+    .{
+        .name = "fb-smoke",
+        .source = "src/userland/fb_smoke.zig",
+        .description = "guest IOKit framebuffer present smoke",
+        .guest_path = "bin/fb-smoke",
+    },
+    .{
+        .name = "window-smoke",
+        .source = "src/userland/window_smoke.zig",
+        .description = "guest SkyLight/CGS window composite smoke",
+        .guest_path = "bin/window-smoke",
+        .needs_skylight = true,
+    },
+};
+
+fn addUserlandProgram(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    program: UserlandProgram,
+    libsystem: *std.Build.Step.Compile,
+    skylight: *std.Build.Step.Compile,
+) *std.Build.Step.Compile {
+    const guest_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
         .os_tag = .macos,
         .abi = .none,
     });
 
-    const smoke_mod = b.createModule(.{
-        .root_source_file = b.path("src/userland/threads.zig"),
-        .target = smoke_target,
+    const mod = b.createModule(.{
+        .root_source_file = b.path(program.source),
+        .target = guest_target,
         .optimize = optimize,
         .link_libc = false,
     });
 
-    const smoke = b.addExecutable(.{
-        .name = "zig-smoke",
-        .root_module = smoke_mod,
+    const exe = b.addExecutable(.{
+        .name = program.name,
+        .root_module = mod,
     });
-    smoke_mod.linkLibrary(libsystem);
+    // SkyLight first: it re-exports nothing, so libSystem must still be a
+    // direct dependency of the executable for its own POSIX calls.
+    if (program.needs_skylight) mod.linkLibrary(skylight);
+    mod.linkLibrary(libsystem);
 
-    const install = b.addInstallArtifact(smoke, .{
+    const install = b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .{ .custom = "userland" } },
     });
     b.getInstallStep().dependOn(&install.step);
 
-    const step = b.step("zig-smoke", "Build a tiny aarch64-macos Zig executable linked to minimal libSystem");
+    const step = b.step(program.name, b.fmt("Build {s}", .{program.description}));
     step.dependOn(&install.step);
-    return smoke;
+    return exe;
 }
 
-fn addZigSmokeRootfs(b: *std.Build) void {
-    const make_img = b.addSystemCommand(&.{
+// (fb-smoke / window-smoke / zig-smoke all come from userland_programs above.)
+
+// SkyLight.framework replacement: the CGS* window-server API implemented on
+// top of our IOKit framebuffer (src/skylight/*.zig).  Built as its own dylib
+// with Apple's install name so std.DynLib consumers (Prism's
+// platform/darwin.zig) find it at the usual path inside the guest rootfs.
+fn addSkyLight(b: *std.Build, optimize: std.builtin.OptimizeMode, libsystem: *std.Build.Step.Compile) *std.Build.Step.Compile {
+    const skylight_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+        .abi = .none,
+    });
+
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/skylight/skylight.zig"),
+        .target = skylight_target,
+        .optimize = optimize,
+        .link_libc = false,
+    });
+
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "SkyLight",
+        .root_module = mod,
+    });
+    lib.install_name = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight";
+    mod.linkLibrary(libsystem);
+
+    const install = b.addInstallArtifact(lib, .{
+        .dest_dir = .{ .override = .{ .custom = "lib" } },
+        .dest_sub_path = "SkyLight",
+    });
+    b.getInstallStep().dependOn(&install.step);
+
+    const step = b.step("skylight", "Build the FOSS SkyLight/CGS window server for aarch64-macos");
+    step.dependOn(&install.step);
+    return lib;
+}
+
+// Host-side unit tests for the compositor core (pure pixel math, no Mach).
+fn addSkyLightTests(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/skylight/compositor.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const t = b.addTest(.{ .root_module = mod });
+    const step = b.step("test-skylight", "Run window compositor unit tests on the host");
+    step.dependOn(&b.addRunArtifact(t).step);
+}
+
+fn addZigSmokeRootfs(b: *std.Build, main_name: []const u8) void {
+    var args = std.ArrayList([]const u8).empty;
+    args.appendSlice(b.allocator, &.{
         "python3",
         "tools/make_fat32.py",
         "zig-out/zig-smoke-rootfs.img",
         "--multi",
         "usr/lib/libSystem.B.dylib=zig-out/lib/libSystem.B.dylib",
-        "bin/zig-smoke=zig-out/userland/zig-smoke",
-        "MAIN=zig-out/userland/zig-smoke",
-    });
+        "System/Library/PrivateFrameworks/SkyLight.framework/SkyLight=zig-out/lib/SkyLight",
+    }) catch @panic("OOM");
+
+    // Every userland program ships in the image; -Dmain= only decides which
+    // one the kernel autoruns as MAIN (kmain.zig reads that fixed name).
+    var main_source: ?[]const u8 = null;
+    for (userland_programs) |p| {
+        const host_path = b.fmt("zig-out/userland/{s}", .{p.name});
+        args.append(b.allocator, b.fmt("{s}={s}", .{ p.guest_path, host_path })) catch @panic("OOM");
+        if (std.mem.eql(u8, p.name, main_name)) main_source = host_path;
+    }
+    const main_path = main_source orelse {
+        std.debug.print("unknown -Dmain={s}; known programs:", .{main_name});
+        for (userland_programs) |p| std.debug.print(" {s}", .{p.name});
+        std.debug.print("\n", .{});
+        @panic("invalid -Dmain");
+    };
+    args.append(b.allocator, b.fmt("MAIN={s}", .{main_path})) catch @panic("OOM");
+
+    const make_img = b.addSystemCommand(args.items);
     make_img.step.dependOn(b.getInstallStep());
 
-    const step = b.step("zig-smoke-rootfs", "Build a FAT32 QEMU rootfs containing zig-smoke and libSystem");
+    const step = b.step("zig-smoke-rootfs", b.fmt("Build a FAT32 QEMU rootfs with every userland program (MAIN = {s}, override with -Dmain=)", .{main_name}));
     step.dependOn(&make_img.step);
 }
 
@@ -246,10 +358,14 @@ pub fn build(b: *std.Build) void {
     _ = b.dependency("prism", .{ .target = target, .optimize = optimize });
 
     const rootfs_path = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
+    const main_name = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke)") orelse "zig-smoke";
+
     addKernel(b, optimize, rootfs_path);
     addPrepareSharedCacheTool(b, optimize);
     addDarwinWindowSmoke(b, optimize);
     const libsystem = addMinimalLibSystem(b, optimize);
-    _ = addZigDarwinSmoke(b, optimize, libsystem);
-    addZigSmokeRootfs(b);
+    const skylight = addSkyLight(b, optimize, libsystem);
+    for (userland_programs) |p| _ = addUserlandProgram(b, optimize, p, libsystem, skylight);
+    addSkyLightTests(b, optimize);
+    addZigSmokeRootfs(b, main_name);
 }
