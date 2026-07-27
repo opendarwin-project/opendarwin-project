@@ -5,6 +5,7 @@ const signal = @import("../proc/signal.zig");
 const cpu = @import("../arch/aarch64/cpu.zig");
 const numbers = @import("numbers.zig");
 const Vmm = @import("../mm/vmm.zig").Vmm;
+const mmu_mod = @import("../mm/mmu.zig");
 const usercopy = @import("usercopy.zig");
 const timer = @import("../drivers/timer.zig");
 const fdtable = @import("fd.zig");
@@ -26,7 +27,12 @@ pub const table: [1024]?handler_type = init: {
     t[numbers.SYS_sigprocmask] = sysSigprocmask;
     t[numbers.SYS_sigreturn] = sysSigreturn;
     t[numbers.SYS_pthread_kill] = sysPthreadKill;
+    t[numbers.SYS_stat] = sysStat;
     t[numbers.SYS_fstat] = sysFstat;
+    t[numbers.SYS_stat64] = sysStat;
+    t[numbers.SYS_fstat64] = sysFstat;
+    t[numbers.SYS_lstat64] = sysStat; // no symlinks yet
+    t[numbers.SYS_lseek] = sysLseek;
     t[numbers.SYS_mmap] = sysMmap;
     t[numbers.SYS_munmap] = sysMunmap;
     t[numbers.SYS_mprotect] = sysMprotect;
@@ -59,16 +65,43 @@ pub fn handle(frame: *context.Frame) void {
 
 fn sysWrite(frame: *context.Frame) void {
     const fd = frame.x[0];
-    const buf: [*]const u8 = @ptrFromInt(frame.x[1]);
+    const buf_addr = frame.x[1];
     const len = frame.x[2];
     if (fd == 1 or fd == 2) {
-        uart.print(buf[0..len]);
+        // User buffers may live at preferred PIE VAs (0x1_0000_0000+). Touch
+        // them through the current task's page tables, never by raw dereference.
+        var tmp: [256]u8 = undefined;
+        var done: u64 = 0;
+        while (done < len) {
+            const chunk: usize = @intCast(@min(len - done, tmp.len));
+            if (!copyFromUser(tmp[0..chunk], buf_addr + done)) {
+                frame.x[0] = @bitCast(@as(i64, -EFAULT));
+                return;
+            }
+            uart.print(tmp[0..chunk]);
+            done += @intCast(chunk);
+        }
         frame.x[0] = len;
-    } else if (fdtable.write(fd, frame.x[1], len)) |ret| {
+    } else if (fdtable.write(fd, buf_addr, len)) |ret| {
         frame.x[0] = ret;
     } else {
         frame.x[0] = @bitCast(@as(i64, -1));
     }
+}
+
+fn copyFromUser(dst: []u8, user_addr: u64) bool {
+    if (dst.len == 0) return true;
+    const task = sched.currentTask(cpu.coreId());
+    var i: usize = 0;
+    while (i < dst.len) {
+        const va = user_addr + i;
+        const pa = mmu_mod.getPhysicalAddress(task.ttbr0, va) orelse return false;
+        const page_left: usize = @intCast(0x1000 - (va & 0xfff));
+        const n = @min(dst.len - i, page_left);
+        @memcpy(dst[i..][0..n], @as([*]const u8, @ptrFromInt(pa))[0..n]);
+        i += n;
+    }
+    return true;
 }
 
 fn sysRead(frame: *context.Frame) void {
@@ -88,7 +121,8 @@ fn sysRead(frame: *context.Frame) void {
 }
 
 fn sysOpen(frame: *context.Frame) void {
-    frame.x[0] = @bitCast(@as(i64, -1));
+    // open(path, flags, mode) — mode ignored on this read-only rootfs.
+    frame.x[0] = fdtable.open(frame.x[0], frame.x[1], frame.x[2]);
 }
 
 fn sysClose(frame: *context.Frame) void {
@@ -96,7 +130,16 @@ fn sysClose(frame: *context.Frame) void {
 }
 
 fn sysFstat(frame: *context.Frame) void {
-    frame.x[0] = @bitCast(@as(i64, -1));
+    frame.x[0] = fdtable.fstat(frame.x[0], frame.x[1]);
+}
+
+fn sysStat(frame: *context.Frame) void {
+    frame.x[0] = fdtable.stat(frame.x[0], frame.x[1]);
+}
+
+fn sysLseek(frame: *context.Frame) void {
+    const whence: i32 = @truncate(@as(i64, @bitCast(frame.x[2])));
+    frame.x[0] = fdtable.lseek(frame.x[0], @bitCast(frame.x[1]), whence);
 }
 
 fn sysMmap(frame: *context.Frame) void {

@@ -207,7 +207,9 @@ def main(argv):
             files.append((name, f.read()))
     build(out, files)
     for name, src in specs:
-        print(f"wrote {out}: {name} ({len(open(src, 'rb').read())} bytes)")
+        size = len(open(src, "rb").read())
+        note = " [autorun]" if name == "MAIN" or name.endswith("/MAIN") else ""
+        print(f"wrote {out}: {name} <- {src} ({size} bytes){note}")
     return 0
 
 

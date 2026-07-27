@@ -192,6 +192,12 @@ pub const LoadOptions = struct {
     resolver: ?dyld.Resolver = null,
     resolver_ctx: ?*anyopaque = null,
     user_accessible: bool = true,
+    /// When true, leave file-relative pointers at their linked (preferred) VAs
+    /// and return `entry` as that preferred VA. The caller must map
+    /// `pa -% slide` → `pa` so those VAs resolve. Needed for MH_EXECUTE PIE
+    /// images linked at 0x1_0000_0000: rebasing them into low physical RAM
+    /// misses absolute/ADRP-adjacent cases and faults on the preferred VA.
+    link_at_preferred_va: bool = false,
 };
 
 pub const SymbolKind = enum { undefined, local, external };
@@ -203,12 +209,20 @@ pub const KernelObjectOptions = struct { resolver: KernelResolver, resolver_ctx:
 pub const KernelObjectResult = struct { base: u64, len: u64, sections: []const Section, local_symbols: []const Symbol, external_symbols: []const Symbol, undefined_symbols: []const Symbol, constructors: []const u64 };
 
 var section_storage: [MAX_SECTIONS]Section = undefined;
-var local_symbol_storage: [64]Symbol = undefined;
-var external_symbol_storage: [256]Symbol = undefined;
-var undefined_symbol_storage: [64]Symbol = undefined;
-var local_reloc_storage: [MAX_LOCAL_RELOCS]Relocation = undefined;
-var external_reloc_storage: [MAX_EXT_RELOCS]Relocation = undefined;
 var constructor_storage: [32]u64 = undefined;
+
+// Symbol tables are sized dynamically from the Mach-O symtab's nsyms count
+// rather than a fixed cap: modern dylibs (e.g. libSystem with CoreFoundation
+// support) can carry well over a thousand exported symbols.
+fn allocDynSlice(comptime T: type, count: usize) []T {
+    if (count == 0) return &.{};
+    const bytes = count * @sizeOf(T);
+    const pages = pageAlign(bytes) / mmu.PAGE_SIZE;
+    const pa = pmm.allocPagesContig(pages);
+    if (pa == 0) @panic("macho: allocPagesContig failed (symbol/reloc storage)");
+    const ptr: [*]T = @ptrFromInt(pa);
+    return ptr[0..count];
+}
 
 pub const LoadResult = struct {
     entry: u64,
@@ -284,12 +298,12 @@ pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadErr
         @memcpy(dst[0..sec.input.size], image[sec.input.offset..][0..sec.input.size]);
     }
 
-    var all_symbols: [128]Symbol = undefined;
-    try loadObjectSymbols(image, st, base, object_sections[0..section_count], &all_symbols);
+    const all_symbols = allocDynSlice(Symbol, st.nsyms);
+    try loadObjectSymbols(image, st, base, object_sections[0..section_count], all_symbols);
 
     for (object_sections[0..section_count], 0..) |sec, idx| {
         if (sec.input.nreloc == 0) continue;
-        try applyObjectRelocations(image, sec.input.reloff, sec.input.nreloc, base + sec.loaded, base, object_sections[0..section_count], &all_symbols, st.nsyms, options);
+        try applyObjectRelocations(image, sec.input.reloff, sec.input.nreloc, base + sec.loaded, base, object_sections[0..section_count], all_symbols, st.nsyms, options);
         section_storage[idx].addr = base + sec.loaded;
     }
 
@@ -300,27 +314,24 @@ pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadErr
         mmu.inheritExtraInTaskTables(base + sec.loaded, pageAlign(sec.input.size), prot);
     }
 
+    const local_symbol_storage = allocDynSlice(Symbol, st.nsyms);
+    const external_symbol_storage = allocDynSlice(Symbol, st.nsyms);
+    const undefined_symbol_storage = allocDynSlice(Symbol, st.nsyms);
     var local_count: usize = 0;
     var external_count: usize = 0;
     var undef_count: usize = 0;
     for (all_symbols[0..st.nsyms]) |sym| switch (sym.kind) {
         .local => {
-            if (local_count < local_symbol_storage.len) {
-                local_symbol_storage[local_count] = sym;
-                local_count += 1;
-            }
+            local_symbol_storage[local_count] = sym;
+            local_count += 1;
         },
         .external => {
-            if (external_count < external_symbol_storage.len) {
-                external_symbol_storage[external_count] = sym;
-                external_count += 1;
-            }
+            external_symbol_storage[external_count] = sym;
+            external_count += 1;
         },
         .undefined => {
-            if (undef_count < undefined_symbol_storage.len) {
-                undefined_symbol_storage[undef_count] = sym;
-                undef_count += 1;
-            }
+            undefined_symbol_storage[undef_count] = sym;
+            undef_count += 1;
         },
     };
 
@@ -475,7 +486,10 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     const total_pages = pageAlign(max_end - min_vmaddr) / mmu.PAGE_SIZE;
     const base_pa = pmm.allocPagesContig(total_pages);
     if (base_pa == 0) @panic("macho: allocPagesContig failed (too fragmented)");
-    const slide = base_pa -% min_vmaddr;
+    // pa_slide converts preferred VA ↔ loaded physical. rebase_slide is what
+    // gets added to pointers in the image: 0 when running at preferred VAs.
+    const pa_slide = base_pa -% min_vmaddr;
+    const rebase_slide: u64 = if (options.link_at_preferred_va) 0 else pa_slide;
 
     var region_idx: usize = 0;
     for (seg_headers[0..seg_count]) |s| {
@@ -494,21 +508,31 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     var local_symbol_count: usize = 0;
     var external_symbol_count: usize = 0;
     var undefined_symbol_count: usize = 0;
+    var local_symbol_storage: []Symbol = &.{};
+    var external_symbol_storage: []Symbol = &.{};
+    var undefined_symbol_storage: []Symbol = &.{};
     if (symtab) |st| {
-        parseSymbols(image, st, dysymtab, slide, &local_symbol_storage, &local_symbol_count, &external_symbol_storage, &external_symbol_count, &undefined_symbol_storage, &undefined_symbol_count) catch |err| return err;
+        local_symbol_storage = allocDynSlice(Symbol, st.nsyms);
+        external_symbol_storage = allocDynSlice(Symbol, st.nsyms);
+        undefined_symbol_storage = allocDynSlice(Symbol, st.nsyms);
+        parseSymbols(image, st, dysymtab, rebase_slide, local_symbol_storage, &local_symbol_count, external_symbol_storage, &external_symbol_count, undefined_symbol_storage, &undefined_symbol_count) catch |err| return err;
     }
 
     var local_reloc_count: usize = 0;
     var external_reloc_count: usize = 0;
+    var local_reloc_storage: []Relocation = &.{};
+    var external_reloc_storage: []Relocation = &.{};
     if (dysymtab) |dt| {
-        parseRelocs(image, dt.locreloff, dt.nlocrel, &local_reloc_storage, &local_reloc_count) catch |err| return err;
-        parseRelocs(image, dt.extreloff, dt.nextrel, &external_reloc_storage, &external_reloc_count) catch |err| return err;
-        applyExternalRelocations(base_pa, min_vmaddr, &external_reloc_storage, external_reloc_count, &undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx) catch |err| return err;
+        local_reloc_storage = allocDynSlice(Relocation, dt.nlocrel);
+        external_reloc_storage = allocDynSlice(Relocation, dt.nextrel);
+        parseRelocs(image, dt.locreloff, dt.nlocrel, local_reloc_storage, &local_reloc_count) catch |err| return err;
+        parseRelocs(image, dt.extreloff, dt.nextrel, external_reloc_storage, &external_reloc_count) catch |err| return err;
+        applyExternalRelocations(base_pa, min_vmaddr, external_reloc_storage, external_reloc_count, undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx) catch |err| return err;
     }
 
     if (dyldinfo) |info| {
         if (@as(u64, info.rebase_off) + info.rebase_size > image.len) return LoadError.Truncated;
-        if (info.rebase_size > 0) applyRebase(image[info.rebase_off..][0..info.rebase_size], seg_headers[0..seg_count], base_pa, slide, min_vmaddr);
+        if (info.rebase_size > 0) applyRebase(image[info.rebase_off..][0..info.rebase_size], seg_headers[0..seg_count], base_pa, rebase_slide, min_vmaddr);
     }
 
     if (dyldinfo) |info| {
@@ -530,9 +554,9 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     }
 
     return .{
-        .entry = base_pa + (raw_entry - min_vmaddr),
-        .mach_header = base_pa,
-        .slide = slide,
+        .entry = if (options.link_at_preferred_va) raw_entry else base_pa + (raw_entry - min_vmaddr),
+        .mach_header = if (options.link_at_preferred_va) min_vmaddr else base_pa,
+        .slide = pa_slide,
         .sections = section_storage[0..section_count],
         .local_symbols = local_symbol_storage[0..local_symbol_count],
         .external_symbols = external_symbol_storage[0..external_symbol_count],
@@ -689,11 +713,11 @@ fn parseSymbols(
     st: Symtab,
     dt_opt: ?Dysymtab,
     slide: u64,
-    locals: *[64]Symbol,
+    locals: []Symbol,
     local_count: *usize,
-    externals: *[256]Symbol,
+    externals: []Symbol,
     external_count: *usize,
-    undefs: *[64]Symbol,
+    undefs: []Symbol,
     undef_count: *usize,
 ) LoadError!void {
     if (@as(u64, st.symoff) + @as(u64, st.nsyms) * @sizeOf(Nlist64) > image.len) return LoadError.Truncated;
@@ -734,7 +758,7 @@ fn validateSymRange(nsyms: u32, start: u32, count: u32) !void {
     if (@as(u64, start) + count > nsyms) return error.BadRange;
 }
 
-fn parseRelocs(image: []const u8, reloff: u32, nreloc: u32, out: *[MAX_EXT_RELOCS]Relocation, count: *usize) LoadError!void {
+fn parseRelocs(image: []const u8, reloff: u32, nreloc: u32, out: []Relocation, count: *usize) LoadError!void {
     if (nreloc == 0) return;
     if (nreloc > out.len) return LoadError.TooManyRelocations;
     if (@as(u64, reloff) + @as(u64, nreloc) * @sizeOf(RelocationInfo) > image.len) return LoadError.Truncated;
@@ -748,7 +772,7 @@ fn parseRelocs(image: []const u8, reloff: u32, nreloc: u32, out: *[MAX_EXT_RELOC
     }
 }
 
-fn applyExternalRelocations(base_pa: u64, min_vmaddr: u64, relocs: *[MAX_EXT_RELOCS]Relocation, reloc_count: usize, undefs: *[64]Symbol, undef_count: usize, resolver: ?dyld.Resolver, resolver_ctx: ?*anyopaque) LoadError!void {
+fn applyExternalRelocations(base_pa: u64, min_vmaddr: u64, relocs: []Relocation, reloc_count: usize, undefs: []Symbol, undef_count: usize, resolver: ?dyld.Resolver, resolver_ctx: ?*anyopaque) LoadError!void {
     for (relocs[0..reloc_count]) |r| {
         if (!r.extern_) continue;
         if (r.symbolnum >= undef_count) return LoadError.UnresolvedSymbol;
@@ -849,7 +873,7 @@ fn alignForward(value: u64, pow2: u6) u64 {
     return (value + a - 1) & ~(a - 1);
 }
 
-fn loadObjectSymbols(image: []const u8, st: Symtab, base: u64, sections: []const ObjectSection, out: *[128]Symbol) LoadError!void {
+fn loadObjectSymbols(image: []const u8, st: Symtab, base: u64, sections: []const ObjectSection, out: []Symbol) LoadError!void {
     if (st.nsyms > out.len) return LoadError.UnresolvedSymbol;
     if (@as(u64, st.symoff) + @as(u64, st.nsyms) * @sizeOf(Nlist64) > image.len) return LoadError.Truncated;
     var i: u32 = 0;
@@ -866,7 +890,7 @@ fn loadObjectSymbols(image: []const u8, st: Symtab, base: u64, sections: []const
     }
 }
 
-fn relocTarget(r: Relocation, base: u64, sections: []const ObjectSection, symbols: *[128]Symbol, nsyms: u32, options: KernelObjectOptions) LoadError!u64 {
+fn relocTarget(r: Relocation, base: u64, sections: []const ObjectSection, symbols: []Symbol, nsyms: u32, options: KernelObjectOptions) LoadError!u64 {
     if (r.extern_) {
         if (r.symbolnum >= nsyms) return LoadError.UnresolvedSymbol;
         const sym = symbols[r.symbolnum];
@@ -877,7 +901,7 @@ fn relocTarget(r: Relocation, base: u64, sections: []const ObjectSection, symbol
     return base + sections[r.symbolnum - 1].loaded;
 }
 
-fn applyObjectRelocations(image: []const u8, reloff: u32, nreloc: u32, section_addr: u64, base: u64, sections: []const ObjectSection, symbols: *[128]Symbol, nsyms: u32, options: KernelObjectOptions) LoadError!void {
+fn applyObjectRelocations(image: []const u8, reloff: u32, nreloc: u32, section_addr: u64, base: u64, sections: []const ObjectSection, symbols: []Symbol, nsyms: u32, options: KernelObjectOptions) LoadError!void {
     if (nreloc > MAX_LOCAL_RELOCS) return LoadError.TooManyRelocations;
     if (@as(u64, reloff) + @as(u64, nreloc) * @sizeOf(RelocationInfo) > image.len) return LoadError.Truncated;
     var i: u32 = 0;

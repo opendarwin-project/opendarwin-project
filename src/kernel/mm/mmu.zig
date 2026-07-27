@@ -349,13 +349,29 @@ pub fn enableForThisCore() void {
     asm volatile ("isb");
 }
 
-/// Maps an additional identity range into kernel_root only. Safe to call any
-/// time after enable(): by then MMU is on, so this is ordinary Normal-memory
-/// code, no pre-MMU care needed.
+/// Maps an additional identity range into kernel_root and records it for
+/// every future task table (`newTaskTable` inherits `extra_kernel_regions`).
+/// Required for PCI MMIO BARs: after a user task is running, SVC handlers
+/// still execute with that task's TTBR0, so device registers must be present
+/// there — not only in `kernel_root`.
 pub fn mapExtra(pa: u64, len: u64, prot: Prot) void {
     const aligned_pa = pa & ~(PAGE_SIZE - 1);
     const aligned_len = ((pa + len) - aligned_pa + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     mapRange(&kernel_root, aligned_pa, aligned_pa, aligned_len, prot);
+    // Deduplicate: assignBars/mapExtra may be called more than once for the
+    // same window during probe.
+    var already = false;
+    for (extra_kernel_regions[0..extra_kernel_region_count]) |r| {
+        if (r.pa == aligned_pa and r.len == aligned_len) {
+            already = true;
+            break;
+        }
+    }
+    if (!already) {
+        if (extra_kernel_region_count >= MAX_EXTRA_KERNEL_REGIONS) @panic("mmu: too many extra kernel regions");
+        extra_kernel_regions[extra_kernel_region_count] = .{ .pa = aligned_pa, .len = aligned_len, .prot = prot };
+        extra_kernel_region_count += 1;
+    }
     switchTtbr0(&kernel_root); // flush stale TLB entries for the newly-mapped range
 }
 

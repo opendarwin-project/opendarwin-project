@@ -1,13 +1,12 @@
-//! Read-only FAT12/16/32 reader over a conduit `device.Block`, ported from
-//! Midstall/weir's src/fs/fat.zig (a UEFI-firmware FAT driver) - the
-//! cluster-chain/directory-scan logic is unchanged, only the block-device
-//! type and the exposed entry points differ: no `fs.Fs` vtable here, just
-//! `mount()` + `readFile()` directly, since this kernel has exactly one
-//! rootfs.
+//! Read-only FAT12/16/32 over a conduit `device.Block`, exposed as an
+//! XNU/BSD-style VFS filesystem (`vfsops` / vnode ops). Cluster-chain and
+//! directory-scan logic is unchanged from the earlier direct reader; the
+//! public surface is now mount-via-VFS plus `readFile` for early boot.
 
 const std = @import("std");
 const conduit = @import("conduit");
 const Block = conduit.device.Block;
+const vfs = @import("vfs.zig");
 
 const Type = enum { fat12, fat16, fat32 };
 
@@ -24,6 +23,15 @@ const State = struct {
     root_dir_sectors: u32 = 0, // FAT12/16
     root_dir_start: u32 = 0, // FAT12/16 first sector
     kind: Type = .fat32,
+};
+
+/// Per-vnode FAT cookie.
+const FatNode = struct {
+    cluster: u32 = 0,
+    size: u32 = 0,
+    is_dir: bool = false,
+    /// Parent directory cluster (root's parent is itself).
+    parent: u32 = 0,
 };
 
 var state: State = .{};
@@ -71,7 +79,6 @@ fn nextCluster(s: *const State, cluster: u32) u32 {
         .fat12 => {
             const off = cluster + cluster / 2;
             const buf = readFatSector(s, off / 512) orelse return 0xfff;
-            // A 12-bit entry can straddle a sector boundary; read two bytes safely.
             const lo = buf[off % 512];
             const hi = if (off % 512 == 511) blk: {
                 var nb: [512]u8 = undefined;
@@ -84,8 +91,7 @@ fn nextCluster(s: *const State, cluster: u32) u32 {
     }
 }
 
-/// Mount the partition. Returns an Fs handle or null.
-pub fn mount(dev: Block) bool {
+fn mountVolume(dev: Block) bool {
     var bpb: [512]u8 = undefined;
     if (!dev.readBlocks(0, 1, &bpb)) return false;
 
@@ -110,12 +116,10 @@ pub fn mount(dev: Block) bool {
 
     const data_sectors = total - s.first_data_sector;
     const clusters = data_sectors / s.sectors_per_cluster;
-    // A zero 16-bit FAT size means FAT32 (it uses the 32-bit field); reliable
-    // even for small volumes that the cluster-count rule would misjudge.
     s.kind = if (fat16_size == 0) .fat32 else if (clusters < 4085) .fat12 else .fat16;
 
     state = s;
-    fat_cache_rel = 0xffffffff; // invalidate for the new volume
+    fat_cache_rel = 0xffffffff;
     return true;
 }
 
@@ -129,7 +133,6 @@ fn ieq(a: []const u8, b: []const u8) bool {
     return true;
 }
 
-/// Build "NAME.EXT" (uppercased, trimmed) from an 8.3 entry.
 fn shortName(raw: []const u8, out: []u8) usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -150,13 +153,19 @@ fn shortName(raw: []const u8, out: []u8) usize {
 }
 
 const Entry = struct { cluster: u32, size: u32, is_dir: bool };
-
-// Directory location: fixed FAT12/16 root region, or a cluster chain.
 const Dir = union(enum) { root16, chain: u32 };
 
-/// Scan a directory for `name` (case-insensitive, matches LFN or short name).
+fn rootClusterKey() u32 {
+    return if (state.kind == .fat32) state.root_cluster else 0;
+}
+
+fn dirFromCluster(cluster: u32) Dir {
+    if (state.kind != .fat32 and cluster == 0) return .root16;
+    return .{ .chain = cluster };
+}
+
 fn findInDir(s: *State, dir: Dir, name: []const u8) ?Entry {
-    var lfn: [260]u8 = undefined; // reconstructed long name (ASCII subset)
+    var lfn: [260]u8 = undefined;
     var lfn_len: usize = 0;
     var have_lfn = false;
 
@@ -188,14 +197,13 @@ fn findInDir(s: *State, dir: Dir, name: []const u8) ?Entry {
             var e: usize = 0;
             while (e < 512) : (e += 32) {
                 const ent = sector_buf[e .. e + 32];
-                if (ent[0] == 0x00) return null; // end of directory
+                if (ent[0] == 0x00) return null;
                 if (ent[0] == 0xe5) {
                     have_lfn = false;
                     continue;
                 }
                 const attr = ent[11];
                 if (attr == 0x0f) {
-                    // LFN fragment: 13 UTF-16 chars at fixed offsets, reversed order.
                     const seq = ent[0] & 0x1f;
                     const idx_positions = [13]usize{ 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
                     var tmp: [13]u8 = undefined;
@@ -209,12 +217,12 @@ fn findInDir(s: *State, dir: Dir, name: []const u8) ?Entry {
                     const base = (seq - 1) * 13;
                     if (base + tn <= lfn.len) {
                         @memcpy(lfn[base .. base + tn], tmp[0..tn]);
-                        if (ent[0] & 0x40 != 0) lfn_len = base + tn; // last (first physically) entry sets length
+                        if (ent[0] & 0x40 != 0) lfn_len = base + tn;
                     }
                     have_lfn = true;
                     continue;
                 }
-                if (attr & 0x08 != 0) { // volume label
+                if (attr & 0x08 != 0) {
                     have_lfn = false;
                     continue;
                 }
@@ -242,50 +250,163 @@ fn findInDir(s: *State, dir: Dir, name: []const u8) ?Entry {
     }
 }
 
-/// Read a file's cluster chain into `buf`, up to its size. Returns bytes read.
-fn readChain(s: *State, start_cluster: u32, size: u32, buf: []u8) ?usize {
-    if (size > buf.len) return null;
-    const cluster_bytes = s.sectors_per_cluster * 512;
+fn readChainAt(s: *State, start_cluster: u32, size: u32, offset: u64, buf: []u8) ?usize {
+    if (offset >= size or buf.len == 0) return 0;
+    const want: usize = @intCast(@min(@as(u64, buf.len), @as(u64, size) - offset));
+    const cluster_bytes: u64 = s.sectors_per_cluster * 512;
+
     var cluster = start_cluster;
+    var pos: u64 = 0;
+    while (pos + cluster_bytes <= offset) {
+        if (eoc(s, cluster) or cluster < 2) return 0;
+        cluster = nextCluster(s, cluster);
+        pos += cluster_bytes;
+    }
+
     var written: usize = 0;
-    while (written < size) {
+    while (written < want) {
         if (eoc(s, cluster) or cluster < 2) break;
-        const sector = clusterToSector(s, cluster);
+        const sector_base = clusterToSector(s, cluster);
         var ss: u32 = 0;
-        while (ss < s.sectors_per_cluster and written < size) : (ss += 1) {
-            const chunk = @min(@as(usize, 512), size - written);
-            if (chunk == 512) {
-                if (!s.dev.readBlocks(sector + ss, 1, buf[written..][0..512])) return null;
-            } else {
-                if (!s.dev.readBlocks(sector + ss, 1, &sector_buf)) return null;
-                @memcpy(buf[written..][0..chunk], sector_buf[0..chunk]);
-            }
+        while (ss < s.sectors_per_cluster and written < want) : (ss += 1) {
+            const sector_off: u64 = pos + @as(u64, ss) * 512;
+            if (sector_off + 512 <= offset) continue;
+            if (sector_off >= offset + want) return written;
+
+            if (!s.dev.readBlocks(sector_base + ss, 1, &sector_buf)) return null;
+            const from: usize = if (sector_off < offset) @intCast(offset - sector_off) else 0;
+            const to: usize = @intCast(@min(@as(u64, 512), offset + want - sector_off));
+            const chunk = to - from;
+            @memcpy(buf[written..][0..chunk], sector_buf[from..to]);
             written += chunk;
         }
-        _ = cluster_bytes;
         cluster = nextCluster(s, cluster);
+        pos += cluster_bytes;
     }
     return written;
 }
 
-/// Read a file by path (components separated by '/' or '\\') into `buf`.
-/// Returns bytes read, or null if any path component doesn't resolve.
-pub fn readFile(path: []const u8, buf: []u8) ?usize {
-    const s: *State = &state;
+fn fatNode(vp: *vfs.Vnode) *FatNode {
+    return @ptrCast(@alignCast(vp.data.?));
+}
 
-    var dir: Dir = if (s.kind == .fat32) .{ .chain = s.root_cluster } else .root16;
-    var it = std.mem.tokenizeAny(u8, path, "/\\");
-    var entry: ?Entry = null;
-    while (it.next()) |comp| {
-        const found = findInDir(s, dir, comp) orelse return null;
-        if (it.peek() != null) {
-            if (!found.is_dir) return null;
-            dir = .{ .chain = found.cluster };
-        } else {
-            if (found.is_dir) return null;
-            entry = found;
+const MAX_FAT_NODES = 128;
+var fat_node_pool: [MAX_FAT_NODES]FatNode = [_]FatNode{.{}} ** MAX_FAT_NODES;
+var fat_node_used: [MAX_FAT_NODES]bool = [_]bool{false} ** MAX_FAT_NODES;
+
+fn allocFatNode() ?*FatNode {
+    for (&fat_node_pool, 0..) |*n, i| {
+        if (!fat_node_used[i]) {
+            fat_node_used[i] = true;
+            n.* = .{};
+            return n;
         }
     }
-    const f = entry orelse return null;
-    return readChain(s, f.cluster, f.size, buf);
+    return null;
+}
+
+fn freeFatNode(n: *FatNode) void {
+    const base = @intFromPtr(&fat_node_pool);
+    const addr = @intFromPtr(n);
+    if (addr < base) return;
+    const idx = (addr - base) / @sizeOf(FatNode);
+    if (idx < MAX_FAT_NODES) fat_node_used[idx] = false;
+}
+
+fn getOrMakeVnode(mp: *vfs.Mount, cluster: u32, size: u32, is_dir: bool, parent: u32) ?*vfs.Vnode {
+    const key: u64 = cluster;
+    if (vfs.vcacheLookup(mp, key)) |vp| return vp;
+
+    const vp = vfs.valloc() orelse return null;
+    const node = allocFatNode() orelse {
+        vp.* = .{};
+        return null;
+    };
+    node.* = .{ .cluster = cluster, .size = size, .is_dir = is_dir, .parent = parent };
+    vp.* = .{
+        .ops = &vnode_ops,
+        .typ = if (is_dir) .dir else .reg,
+        .mount = mp,
+        .data = node,
+        .usecount = 1,
+        .key = key,
+    };
+    return vp;
+}
+
+fn fatLookup(dvp: *vfs.Vnode, name: []const u8, vpp: *?*vfs.Vnode) i32 {
+    const mp = dvp.mount orelse return -vfs.EINVAL;
+    const dn = fatNode(dvp);
+
+    if (name.len == 2 and name[0] == '.' and name[1] == '.') {
+        const parent = dn.parent;
+        const vp = getOrMakeVnode(mp, parent, 0, true, parent) orelse return -vfs.ENOMEM;
+        vpp.* = vp;
+        return 0;
+    }
+
+    const dir = dirFromCluster(dn.cluster);
+    const found = findInDir(&state, dir, name) orelse return -vfs.ENOENT;
+    const vp = getOrMakeVnode(mp, found.cluster, found.size, found.is_dir, dn.cluster) orelse return -vfs.ENOMEM;
+    vpp.* = vp;
+    return 0;
+}
+
+fn fatGetattr(vp: *vfs.Vnode, vap: *vfs.Vattr) i32 {
+    const n = fatNode(vp);
+    vap.* = .{
+        .typ = vp.typ,
+        .mode = 0,
+        .nlink = 1,
+        .size = if (n.is_dir) 0 else n.size,
+        .ino = n.cluster,
+        .blksize = state.sectors_per_cluster * 512,
+    };
+    return 0;
+}
+
+fn fatRead(vp: *vfs.Vnode, offset: u64, buf: []u8) i64 {
+    const n = fatNode(vp);
+    if (n.is_dir) return -vfs.EISDIR;
+    const got = readChainAt(&state, n.cluster, n.size, offset, buf) orelse return -vfs.EIO;
+    return @intCast(got);
+}
+
+fn fatInactive(vp: *vfs.Vnode) void {
+    if (vp.data) |d| freeFatNode(@ptrCast(@alignCast(d)));
+}
+
+const vnode_ops: vfs.VnodeOps = .{
+    .lookup = fatLookup,
+    .getattr = fatGetattr,
+    .read = fatRead,
+    .inactive = fatInactive,
+};
+
+fn fatVfsMount(mp: *vfs.Mount, dev: Block) i32 {
+    if (!mountVolume(dev)) return -vfs.ENODEV;
+    mp.data = &state;
+    return 0;
+}
+
+fn fatVfsRoot(mp: *vfs.Mount, vpp: *?*vfs.Vnode) i32 {
+    const key = rootClusterKey();
+    const vp = getOrMakeVnode(mp, key, 0, true, key) orelse return -vfs.ENOMEM;
+    vpp.* = vp;
+    return 0;
+}
+
+pub const vfsops: vfs.VfsOps = .{
+    .mount = fatVfsMount,
+    .root = fatVfsRoot,
+};
+
+/// Mount as the system root via VFS.
+pub fn mount(dev: Block) bool {
+    return vfs.mountRoot(&vfsops, dev);
+}
+
+/// Read a file by path into `buf`. Routes through VFS once root is mounted.
+pub fn readFile(path: []const u8, buf: []u8) ?usize {
+    return vfs.readFile(path, buf);
 }
