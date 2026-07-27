@@ -188,11 +188,11 @@ fn spawnZigSmokeFromFat() bool {
 
     // The Zig Mach-O requests a 16 MiB stack. Stacks are fixed-size until
     // demand-backed stack growth is implemented, so provide the full request.
+    // Contiguous PMM pages — freelist order is not bump-contiguous.
     const stack_pages = 4096; // 16 MiB
     const stack_len = stack_pages * mmu.PAGE_SIZE;
-    const stack_pa = mmu.allocPage();
-    var extra_stack_page: usize = 1;
-    while (extra_stack_page < stack_pages) : (extra_stack_page += 1) _ = mmu.allocPage();
+    const stack_pa = pmm.allocPagesContig(stack_pages);
+    if (stack_pa == 0) @panic("zig-smoke: stack allocPagesContig failed");
     var task_regions: [9]mmu.Region = undefined;
     if (main_regions_used + 1 > task_regions.len) {
         uart.print("opendarwin: zig-smoke: too many main regions\n");
@@ -416,6 +416,7 @@ export fn kmain() callconv(.c) noreturn {
         const free_base = kernel_reserved_end;
         const free_size = (ram_base + ram_size) - kernel_reserved_end;
         pmm.init(&.{.{ .base = free_base, .size = free_size }});
+        mmu.setPageAllocator(pmm.allocPage);
         uart.print("opendarwin: PMM initialized (");
         var mb = free_size / 0x100000;
         var mb_buf: [12]u8 = undefined;

@@ -473,9 +473,8 @@ pub fn loadWithOptions(image: []const u8, regions_out: []mmu.Region, regions_use
     };
 
     const total_pages = pageAlign(max_end - min_vmaddr) / mmu.PAGE_SIZE;
-    const base_pa = mmu.allocPage();
-    var pi: u64 = 1;
-    while (pi < total_pages) : (pi += 1) _ = mmu.allocPage();
+    const base_pa = pmm.allocPagesContig(total_pages);
+    if (base_pa == 0) @panic("macho: allocPagesContig failed (too fragmented)");
     const slide = base_pa -% min_vmaddr;
 
     var region_idx: usize = 0;
