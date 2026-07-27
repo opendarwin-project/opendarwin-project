@@ -16,11 +16,11 @@ IOMasterPort (mach_host_self, trap 29)
 
 ### Mach trap numbers (XNU-accurate)
 
-| Trap | Name |
-|------|------|
-| 26 | `mach_reply_port` |
-| 27–29 | thread/task/host self |
-| 31–32 | `mach_msg` / overwrite |
+| Trap    | Name                                          |
+| ------- | --------------------------------------------- |
+| 26      | `mach_reply_port`                             |
+| 27–29   | thread/task/host self                         |
+| 31–32   | `mach_msg` / overwrite                        |
 | **100** | `iokit_user_client_trap` (`IOConnectTrap0…6`) |
 
 Method dispatch for getInfo (index 0) and present (index 1) goes through
@@ -33,12 +33,12 @@ ports carry IOKit kobjects (`src/kernel/iokit/user_client.zig`,
 ## Userspace
 
 Headers: [`include/IOKit/IOKitLib.h`](../include/IOKit/IOKitLib.h)  
-libSystem: [`src/libsystem/iokit.zig`](../src/libsystem/iokit.zig)
+libSystem: [`src/iokit/iokit.zig`](../src/iokit/iokit.zig) (IOKit.framework dylib)
 
 ## Prism
 
 `platform.darwin` DynLib-loads `IOFramebufferOpenDefault` /
-`IOFramebufferPresent` from libSystem and presents through that connect.
+`IOFramebufferPresent` from IOKit.framework and presents through that connect.
 
 ## Smoke
 

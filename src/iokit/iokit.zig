@@ -1,6 +1,9 @@
-//! Darwin IOKitLib userspace — IOMasterPort / matching / open / map via
+//! Darwin IOKit.framework userspace — IOMasterPort / matching / open / map via
 //! mach_msg, and IOConnectTrap / method dispatch via XNU trap 100
 //! (`iokit_user_client_trap`).
+//!
+//! Built as its own dylib (not libSystem) with Apple's install name so
+//! LC_LOAD_DYLIB consumers (fb-smoke, SkyLight, Prism) match real macOS.
 
 const std = @import("std");
 

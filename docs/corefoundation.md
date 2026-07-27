@@ -5,7 +5,7 @@ and that is the cheapest path** — CF is plain C, it is one of the few Apple
 frameworks with a genuinely portable upstream, and its dependency surface is
 almost entirely POSIX + pthreads + malloc + a handful of Mach calls we already
 have trap wrappers for. The work is not "write CF", it is "close a symbol gap",
-which is a mechanical loop (see *Workflow* below).
+which is a mechanical loop (see _Workflow_ below).
 
 ## Which CF sources (settled: swift-corelibs, 5.1.5)
 
@@ -18,11 +18,11 @@ which is a mechanical loop (see *Workflow* below).
 
 Why that exact source, having tried the alternatives:
 
-| candidate | verdict |
-| --- | --- |
+| candidate                                           | verdict                                                                                                                                                                                                       |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | swift-corelibs **6.0.3** (`Sources/CoreFoundation`) | **Rejected.** `DEPLOYMENT_RUNTIME_C` is gone; `CFRuntime.c` allocates with `swift_allocObject` and retains with `swift_retain`/`swift_release` unconditionally. Adopting it means adopting the Swift runtime. |
-| **apple-oss-distributions/CF (CF-1153)** | Rejected for now. Pristine macOS CF, but wants `auto_zone.h` (ObjC GC), CrashReporterClient, and the Apple SDK's private headers before the first file compiles. |
-| swift-corelibs **5.1.5** (`CoreFoundation/`) | **Chosen.** Same CF-1153 lineage, still has the non-Swift C refcounting path, and compiles clean with a force-included prefix and six shim headers. |
+| **apple-oss-distributions/CF (CF-1153)**            | Rejected for now. Pristine macOS CF, but wants `auto_zone.h` (ObjC GC), CrashReporterClient, and the Apple SDK's private headers before the first file compiles.                                              |
+| swift-corelibs **5.1.5** (`CoreFoundation/`)        | **Chosen.** Same CF-1153 lineage, still has the non-Swift C refcounting path, and compiles clean with a force-included prefix and six shim headers.                                                           |
 
 The configuration is deliberately a hybrid that no upstream `DEPLOYMENT_TARGET_*`
 describes, because it is exactly what OpenDarwin is:
@@ -36,14 +36,14 @@ describes, because it is exactly what OpenDarwin is:
 `src/corefoundation/shims/` shadows headers Apple has but we do not. Upstream
 sources are used byte-for-byte; nothing is patched.
 
-| shim | why |
-| --- | --- |
+| shim                                                         | why                                                                                                        |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | `objc/{objc,message,runtime,NSObject,objc-auto,objc-sync}.h` | empty — shadow the SDK's real ObjC headers, which conflict with CF's own placeholder `id`/`Class` typedefs |
-| `asl.h` | no syslogd; `CFLog`'s ASL path becomes no-ops and the stderr path does the work |
-| `vproc.h` | no launchd |
-| `mach/mach_vm.h` | zig ships no `mach_vm.h`; declares the three calls `CFUtilities.c` uses |
-| `mach-o/ldsyms.h` | ditto for `_mh_dylib_header` |
-| `unicode/uchar.h` | CF's only ICU reference in this tier is `u_charDigitValue` |
+| `asl.h`                                                      | no syslogd; `CFLog`'s ASL path becomes no-ops and the stderr path does the work                            |
+| `vproc.h`                                                    | no launchd                                                                                                 |
+| `mach/mach_vm.h`                                             | zig ships no `mach_vm.h`; declares the three calls `CFUtilities.c` uses                                    |
+| `mach-o/ldsyms.h`                                            | ditto for `_mh_dylib_header`                                                                               |
+| `unicode/uchar.h`                                            | CF's only ICU reference in this tier is `u_charDigitValue`                                                 |
 
 The prefix header itself supplies just three things: `DECLARE_STATIC_CLASS_REF`
 (defined only in the Swift branch upstream), a pre-include of
@@ -88,24 +88,24 @@ compile side is done.
   or "stub the class-table slot"; `CFLocale`/`CFNumberFormatter` should be
   stubbed, not built, since they are the ICU ones.
 - **~120 libSystem symbols**, and the grouping is exactly as predicted:
-  - *string/mem (16)*: `snprintf`/`vsnprintf`/`asprintf` + `_l` variants,
+  - _string/mem (16)_: `snprintf`/`vsnprintf`/`asprintf` + `_l` variants,
     `strcmp`/`strchr`/`strdup`/`strtol`/`qsort`/`memcmp`/`memchr`
-  - *stdio (9)*: `fprintf`, `fflush`, `opendir`/`readdir`/`closedir`, `stat`
-  - *pthread (10)*: `pthread_key_create`/`getspecific`/`setspecific`,
+  - _stdio (9)_: `fprintf`, `fflush`, `opendir`/`readdir`/`closedir`, `stat`
+  - _pthread (10)_: `pthread_key_create`/`getspecific`/`setspecific`,
     `pthread_mutex_lock`/`unlock`, `pthread_main_np`, `pthread_atfork`
-  - *locking (7)*: `os_unfair_lock_*`, `OSSpinLock*`, `OSAtomic*`
-  - *malloc (12)*: `calloc`, `malloc_good_size`, the `malloc_zone_*` family,
+  - _locking (7)_: `os_unfair_lock_*`, `OSSpinLock*`, `OSAtomic*`
+  - _malloc (12)_: `calloc`, `malloc_good_size`, the `malloc_zone_*` family,
     `mach_vm_allocate`/`deallocate`/`region`, `vm_page_size`
-  - *dyld (8)*: `_dyld_image_count`/`get_image_header`/`vmaddr_slide`,
+  - _dyld (8)_: `_dyld_image_count`/`get_image_header`/`vmaddr_slide`,
     `getsectbynamefromheader_64`, `dlopen`/`dlsym`, `_NSGetArgc`/`Argv`
-  - *misc (48)*: blocks runtime (`_Block_copy`/`_NSConcrete*Block`),
+  - _misc (48)_: blocks runtime (`_Block_copy`/`_NSConcrete*Block`),
     `__*_chk` fortified variants, `__stderrp`, `pow`/`fmod`/`modf`,
     `getpwuid`, and the `section$start$__UNICODE$*` markers below
 
 ### The `__UNICODE` segment
 
 `CFUniChar.c` hard-defines `USE_MACHO_SEGMENT 1` whenever `TARGET_OS_MAC`, so
-the Unicode tables are expected *inside the dylib* as a `__UNICODE` segment,
+the Unicode tables are expected _inside the dylib_ as a `__UNICODE` segment,
 referenced through linker-synthesised `section$start$__UNICODE$__csbitmaps`
 style symbols. That is good news — no runtime file loading — and upstream's own
 Darwin link line tells us exactly how to produce it:
@@ -174,7 +174,7 @@ order the tiers hit it:
    write a compact printf in `libsystem.zig` on top of `std.fmt` (no libc, we
    control it), or vendor a BSD-licensed printf. Recommend the former.
 2. **pthread completion** — `pthread_key_create/getspecific/setspecific/
-   key_delete`, `pthread_once`, `pthread_mutex_*` (incl. recursive),
+key_delete`, `pthread_once`, `pthread_mutex_*` (incl. recursive),
    `pthread_rwlock_*`, `pthread_cond_*`. Our `__ulock_wait2`/`__ulock_wake`
    already give us the futex primitive to build them on.
 3. **locking** — `os_unfair_lock_lock/unlock/trylock`, plus the legacy

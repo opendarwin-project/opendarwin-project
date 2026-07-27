@@ -24,6 +24,9 @@ const MH_DYLIB: u32 = 0x6;
 
 const LC_SEGMENT_64: u32 = 0x19;
 const LC_UNIXTHREAD: u32 = 0x5;
+const LC_LOAD_DYLIB: u32 = 0xc;
+const LC_LOAD_WEAK_DYLIB: u32 = 0x18 | 0x80000000;
+const LC_REEXPORT_DYLIB: u32 = 0x1f | 0x80000000;
 const LC_MAIN: u32 = 0x28 | 0x80000000;
 // 0x0b is the legacy LC_DYLD_INFO; the modern *_ONLY command is 0x22.
 const LC_DYLD_INFO_ONLY: u32 = 0x22 | 0x80000000;
@@ -197,6 +200,14 @@ pub const LoadOptions = struct {
     /// images linked at 0x1_0000_0000: rebasing them into low physical RAM
     /// misses absolute/ADRP-adjacent cases and faults on the preferred VA.
     link_at_preferred_va: bool = false,
+    /// When true, skip applying binds/chained-fixups/external relocations and
+    /// return them via `LoadResult.pending_bind` instead. Needed when this
+    /// image's imports come from *other* FOSS dylibs that have not been
+    /// mapped yet: dyld maps every dependency before binding any of them, so
+    /// a resolver spanning only already-loaded images would wrongly zero out
+    /// forward references. Call `applyPendingBind` once every dependency in
+    /// the group is mapped and a resolver spanning all of them is available.
+    defer_binding: bool = false,
 };
 
 pub const SymbolKind = enum { undefined, local, external };
@@ -271,7 +282,54 @@ pub const LoadResult = struct {
     undefined_symbols: []const Symbol,
     local_relocs: []const Relocation,
     external_relocs: []const Relocation,
+    /// Set when `LoadOptions.defer_binding` was true. Pass to
+    /// `applyPendingBind` once every dylib in the load group is mapped.
+    pending_bind: ?PendingBind = null,
 };
+
+/// Binds deferred by `LoadOptions.defer_binding`. All fields point at data
+/// already copied into loaded segments (LINKEDIT) or permanently allocated
+/// scratch storage, so this stays valid after the source file is closed.
+pub const PendingBind = struct {
+    segs: []const SegInfo,
+    base_pa: u64,
+    min_vmaddr: u64,
+    file_len: u64,
+    bind_off: u32 = 0,
+    bind_size: u32 = 0,
+    lazy_bind_off: u32 = 0,
+    lazy_bind_size: u32 = 0,
+    chained_fixups_off: ?u32 = null,
+    chained_fixups_size: u32 = 0,
+    external_relocs: []const Relocation = &.{},
+    undefined_symbols: []const Symbol = &.{},
+};
+
+/// Perform the binds/chained-fixups/external relocations that were deferred
+/// by `LoadOptions.defer_binding`, using a resolver that can now see every
+/// dylib in the load group (including ones mapped after this one).
+pub fn applyPendingBind(pending: PendingBind, resolver: dyld.Resolver, resolver_ctx: ?*anyopaque) LoadError!void {
+    if (pending.external_relocs.len > 0) {
+        try applyExternalRelocations(pending.base_pa, pending.min_vmaddr, pending.external_relocs, pending.external_relocs.len, pending.undefined_symbols, pending.undefined_symbols.len, resolver, resolver_ctx);
+    }
+    if (pending.bind_size > 0) {
+        const bytes = try mappedFileSlice(pending.segs, pending.base_pa, pending.min_vmaddr, pending.file_len, pending.bind_off, pending.bind_size);
+        try applyBindings(bytes, pending.segs, pending.base_pa, pending.min_vmaddr, resolver, resolver_ctx);
+    }
+    if (pending.lazy_bind_size > 0) {
+        const bytes = try mappedFileSlice(pending.segs, pending.base_pa, pending.min_vmaddr, pending.file_len, pending.lazy_bind_off, pending.lazy_bind_size);
+        try applyBindings(bytes, pending.segs, pending.base_pa, pending.min_vmaddr, resolver, resolver_ctx);
+    }
+    if (pending.chained_fixups_off) |dataoff| {
+        const bytes = try mappedFileSlice(pending.segs, pending.base_pa, pending.min_vmaddr, pending.file_len, dataoff, pending.chained_fixups_size);
+        dyld.applyChainedFixups(bytes, pending.base_pa, resolver, resolver_ctx) catch |err| return switch (err) {
+            error.Truncated => LoadError.Truncated,
+            error.UnsupportedImportFormat => LoadError.UnsupportedImportFormat,
+            error.UnsupportedPointerFormat => LoadError.UnsupportedPointerFormat,
+            error.UnresolvedSymbol => LoadError.UnresolvedSymbol,
+        };
+    }
+}
 
 pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadError!KernelObjectResult {
     if (image.len < @sizeOf(MachHeader64)) return LoadError.Truncated;
@@ -404,6 +462,83 @@ pub fn loadPath(path: []const u8, regions_out: []mmu.Region, regions_used: *usiz
     const opened = vfs.openFile(path) orelse return LoadError.Io;
     defer vfs.vrele(opened.vp);
     return loadFromSource(.{ .vnode = .{ .vp = opened.vp, .size = opened.size } }, regions_out, regions_used, options);
+}
+
+const DylibCommand = extern struct {
+    cmd: u32,
+    cmdsize: u32,
+    name_off: u32,
+    timestamp: u32,
+    current_version: u32,
+    compatibility_version: u32,
+};
+
+/// Install names from LC_LOAD_DYLIB / LC_LOAD_WEAK_DYLIB / LC_REEXPORT_DYLIB.
+/// Names are copied into dynamically allocated storage (survives the call).
+pub fn listNeededDylibs(path: []const u8, out: [][]const u8) LoadError!usize {
+    const opened = vfs.openFile(path) orelse return LoadError.Io;
+    defer vfs.vrele(opened.vp);
+    const source: ImageSource = .{ .vnode = .{ .vp = opened.vp, .size = opened.size } };
+
+    if (source.fileLen() < @sizeOf(MachHeader64)) return LoadError.Truncated;
+    var header: MachHeader64 = undefined;
+    try source.read(0, std.mem.asBytes(&header));
+    if (header.magic != MH_MAGIC_64) return LoadError.BadMagic;
+    if ((header.cputype & CPU_TYPE_ARM64_MASK) != CPU_TYPE_ARM64) return LoadError.WrongArch;
+    if (header.filetype != MH_EXECUTE and header.filetype != MH_DYLIB) return LoadError.UnsupportedFileType;
+    if (@as(u64, @sizeOf(MachHeader64)) + header.sizeofcmds > source.fileLen()) return LoadError.Truncated;
+
+    const cmds = allocDynSlice(u8, header.sizeofcmds);
+    try source.read(@sizeOf(MachHeader64), cmds);
+
+    var count: usize = 0;
+    var off: usize = 0;
+    var i: u32 = 0;
+    while (i < header.ncmds) : (i += 1) {
+        if (off + @sizeOf(LoadCommand) > cmds.len) return LoadError.Truncated;
+        const lc: *const LoadCommand = @ptrCast(@alignCast(cmds.ptr + off));
+        if (lc.cmdsize < @sizeOf(LoadCommand) or off + lc.cmdsize > cmds.len) return LoadError.Truncated;
+        switch (lc.cmd) {
+            LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB => {
+                if (lc.cmdsize < @sizeOf(DylibCommand)) return LoadError.Truncated;
+                const dc: *const DylibCommand = @ptrCast(@alignCast(cmds.ptr + off));
+                if (dc.name_off >= lc.cmdsize) return LoadError.Truncated;
+                const name_start = off + dc.name_off;
+                const name_limit = off + lc.cmdsize;
+                const raw = cmds[name_start..name_limit];
+                const end = std.mem.indexOfScalar(u8, raw, 0) orelse raw.len;
+                const name = raw[0..end];
+                if (name.len == 0) {
+                    off += lc.cmdsize;
+                    continue;
+                }
+                // Dedup identical install names (Zig currently can emit duplicates).
+                var dup = false;
+                for (out[0..count]) |existing| {
+                    if (std.mem.eql(u8, existing, name)) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    if (count >= out.len) return LoadError.OutOfRegions;
+                    const copy = allocDynSlice(u8, name.len);
+                    @memcpy(copy, name);
+                    out[count] = copy;
+                    count += 1;
+                }
+            },
+            else => {},
+        }
+        off += lc.cmdsize;
+    }
+    return count;
+}
+
+/// Map a Mach-O install name to a path inside the guest rootfs image.
+pub fn rootfsPathForInstallName(install_name: []const u8) []const u8 {
+    if (install_name.len > 0 and install_name[0] == '/') return install_name[1..];
+    return install_name;
 }
 
 const ImageSource = union(enum) {
@@ -624,36 +759,65 @@ fn loadFromSource(source: ImageSource, regions_out: []mmu.Region, regions_used: 
             const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dt.extreloff, @as(u64, dt.nextrel) * @sizeOf(RelocationInfo));
             try parseRelocsBytes(bytes, dt.nextrel, external_reloc_storage, &external_reloc_count);
         }
-        try applyExternalRelocations(base_pa, min_vmaddr, external_reloc_storage, external_reloc_count, undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx);
+        if (!options.defer_binding) {
+            try applyExternalRelocations(base_pa, min_vmaddr, external_reloc_storage, external_reloc_count, undefined_symbol_storage, undefined_symbol_count, options.resolver, options.resolver_ctx);
+        }
     }
 
+    var bind_off: u32 = 0;
+    var bind_size: u32 = 0;
+    var lazy_bind_off: u32 = 0;
+    var lazy_bind_size: u32 = 0;
     if (dyldinfo) |info| {
         if (info.rebase_size > 0) {
             const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.rebase_off, info.rebase_size);
             applyRebase(bytes, segs, base_pa, rebase_slide, min_vmaddr);
         }
-        if (info.bind_size > 0) {
-            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.bind_off, info.bind_size);
-            try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
-        }
-        // A full dyld resolves these on first use through a stub. Eagerly bind
-        // them because this kernel loader deliberately has no dyld trampoline.
-        if (info.lazy_bind_size > 0) {
-            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.lazy_bind_off, info.lazy_bind_size);
-            try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+        bind_off = info.bind_off;
+        bind_size = info.bind_size;
+        lazy_bind_off = info.lazy_bind_off;
+        lazy_bind_size = info.lazy_bind_size;
+        if (!options.defer_binding) {
+            if (info.bind_size > 0) {
+                const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.bind_off, info.bind_size);
+                try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+            }
+            // A full dyld resolves these on first use through a stub. Eagerly bind
+            // them because this kernel loader deliberately has no dyld trampoline.
+            if (info.lazy_bind_size > 0) {
+                const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, info.lazy_bind_off, info.lazy_bind_size);
+                try applyBindings(bytes, segs, base_pa, min_vmaddr, options.resolver, options.resolver_ctx);
+            }
         }
     }
 
-    if (chained_fixups_off) |dataoff| {
-        const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dataoff, chained_fixups_size);
-        const r = options.resolver orelse return LoadError.UnresolvedSymbol;
-        dyld.applyChainedFixups(bytes, base_pa, r, options.resolver_ctx) catch |err| return switch (err) {
-            error.Truncated => LoadError.Truncated,
-            error.UnsupportedImportFormat => LoadError.UnsupportedImportFormat,
-            error.UnsupportedPointerFormat => LoadError.UnsupportedPointerFormat,
-            error.UnresolvedSymbol => LoadError.UnresolvedSymbol,
-        };
+    if (!options.defer_binding) {
+        if (chained_fixups_off) |dataoff| {
+            const bytes = try mappedFileSlice(segs, base_pa, min_vmaddr, file_len, dataoff, chained_fixups_size);
+            const r = options.resolver orelse return LoadError.UnresolvedSymbol;
+            dyld.applyChainedFixups(bytes, base_pa, r, options.resolver_ctx) catch |err| return switch (err) {
+                error.Truncated => LoadError.Truncated,
+                error.UnsupportedImportFormat => LoadError.UnsupportedImportFormat,
+                error.UnsupportedPointerFormat => LoadError.UnsupportedPointerFormat,
+                error.UnresolvedSymbol => LoadError.UnresolvedSymbol,
+            };
+        }
     }
+
+    const pending_bind: ?PendingBind = if (options.defer_binding) .{
+        .segs = segs,
+        .base_pa = base_pa,
+        .min_vmaddr = min_vmaddr,
+        .file_len = file_len,
+        .bind_off = bind_off,
+        .bind_size = bind_size,
+        .lazy_bind_off = lazy_bind_off,
+        .lazy_bind_size = lazy_bind_size,
+        .chained_fixups_off = chained_fixups_off,
+        .chained_fixups_size = chained_fixups_size,
+        .external_relocs = external_reloc_storage[0..external_reloc_count],
+        .undefined_symbols = undefined_symbol_storage[0..undefined_symbol_count],
+    } else null;
 
     return .{
         .entry = if (options.link_at_preferred_va) raw_entry else base_pa + (raw_entry - min_vmaddr),
@@ -665,6 +829,7 @@ fn loadFromSource(source: ImageSource, regions_out: []mmu.Region, regions_used: 
         .undefined_symbols = undefined_symbol_storage[0..undefined_symbol_count],
         .local_relocs = local_reloc_storage[0..local_reloc_count],
         .external_relocs = external_reloc_storage[0..external_reloc_count],
+        .pending_bind = pending_bind,
     };
 }
 
@@ -881,7 +1046,7 @@ fn parseRelocsBytes(bytes: []const u8, nreloc: u32, out: []Relocation, count: *u
     }
 }
 
-fn applyExternalRelocations(base_pa: u64, min_vmaddr: u64, relocs: []Relocation, reloc_count: usize, undefs: []Symbol, undef_count: usize, resolver: ?dyld.Resolver, resolver_ctx: ?*anyopaque) LoadError!void {
+fn applyExternalRelocations(base_pa: u64, min_vmaddr: u64, relocs: []const Relocation, reloc_count: usize, undefs: []const Symbol, undef_count: usize, resolver: ?dyld.Resolver, resolver_ctx: ?*anyopaque) LoadError!void {
     for (relocs[0..reloc_count]) |r| {
         if (!r.extern_) continue;
         if (r.symbolnum >= undef_count) return LoadError.UnresolvedSymbol;
