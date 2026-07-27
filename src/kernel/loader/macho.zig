@@ -274,6 +274,7 @@ pub fn loadKernelObject(image: []const u8, options: KernelObjectOptions) LoadErr
     }
     total_len = pageAlign(total_len);
     const base = pmm.allocPagesContig(total_len / mmu.PAGE_SIZE);
+    if (base == 0) @panic("macho: allocPagesContig failed (too fragmented)");
 
     for (object_sections[0..section_count], 0..) |sec, idx| {
         section_storage[idx].addr = base + sec.loaded;

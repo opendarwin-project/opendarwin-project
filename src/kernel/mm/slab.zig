@@ -32,7 +32,7 @@ pub fn init() void {
 
 fn addPage(zone_idx: usize) void {
     const zone = &zones[zone_idx];
-    const pa = pmm.allocPage();
+    const pa = pmm.allocPageUninit();
     const hdr: [*]u64 = @ptrFromInt(pa);
     hdr[0] = zone_idx;
     hdr[1] = zone.page_list orelse 0;

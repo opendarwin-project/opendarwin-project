@@ -6,6 +6,7 @@ const timer = @import("../../drivers/timer.zig");
 const sched = @import("../../proc/sched.zig");
 const signal = @import("../../proc/signal.zig");
 const cpu = @import("cpu.zig");
+const vmm_mod = @import("../../mm/vmm.zig");
 
 const Frame = context.Frame;
 
@@ -101,6 +102,18 @@ export fn handleSyncException(frame: *Frame) callconv(.c) void {
             // the frame to __sigtramp first.
             dispatch.handle(frame);
             signal.deliverCurrent(cpu.coreId(), frame);
+        },
+        0b100100 => {
+            // Data abort (lower EL) - could be a COW fault
+            const far = frame.far_el1;
+            const current_vmm = sched.currentVmm(cpu.coreId());
+            if (current_vmm.handleCowFault(far)) {
+                // COW fault handled - return to retry the instruction
+                return;
+            }
+            // Not a COW fault - dump and halt
+            dumpFrame("synchronous", frame);
+            haltForever();
         },
         else => {
             dumpFrame("synchronous", frame);
