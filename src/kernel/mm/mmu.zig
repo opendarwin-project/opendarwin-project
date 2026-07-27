@@ -143,11 +143,47 @@ fn descendOrCreate(root: *Table, va: u64, target_level: u2) *Table {
             const child = allocTable();
             table.entries[idx] = @intFromPtr(child) | DESC_TABLE | DESC_VALID;
             table = child;
+        } else if (entry & DESC_TABLE == 0) {
+            // Valid block descriptor where a finer walk is needed (e.g. PMM
+            // free RAM inherited as 2MB kernel-only blocks, then a user
+            // segment remaps 4KB pages inside that range). Split the block
+            // into an equivalent table of page/block children so the remap
+            // can override individual entries.
+            table = splitBlockToTable(table, idx, level, entry);
         } else {
             table = @ptrFromInt(entry & 0x0000_ffff_ffff_f000);
         }
     }
     return table;
+}
+
+/// Replace a level-1 (1GB) or level-2 (2MB) block descriptor with a table
+/// whose entries preserve the block's PA coverage and attribute bits.
+fn splitBlockToTable(parent: *Table, idx: u9, level: u2, entry: u64) *Table {
+    const child = allocTable();
+    const TWO_MB: u64 = 0x20_0000;
+    if (level == 2) {
+        // 2MB block → 512×4KB page descriptors.
+        const block_pa = entry & 0x0000_ffff_ffe0_0000;
+        const attrs = (entry & ~@as(u64, 0x0000_ffff_ffe0_0000)) | DESC_PAGE;
+        var i: u64 = 0;
+        while (i < 512) : (i += 1) {
+            child.entries[@intCast(i)] = (block_pa + i * PAGE_SIZE) | attrs;
+        }
+    } else if (level == 1) {
+        // 1GB block → 512×2MB block descriptors (we don't emit 1GB today,
+        // but handle it so a future mapBlock1G wouldn't soft-lock remaps).
+        const block_pa = entry & 0x0000_ffff_c000_0000;
+        const attrs = entry & ~@as(u64, 0x0000_ffff_c000_0000); // type bit stays 0 (block)
+        var i: u64 = 0;
+        while (i < 512) : (i += 1) {
+            child.entries[@intCast(i)] = (block_pa + i * TWO_MB) | attrs;
+        }
+    } else {
+        @panic("mmu: cannot split block at level 0");
+    }
+    parent.entries[idx] = @intFromPtr(child) | DESC_TABLE | DESC_VALID;
+    return child;
 }
 
 fn mapBlock2M(root: *Table, va: u64, pa: u64, prot: Prot) void {
@@ -175,10 +211,12 @@ pub const Region = extern struct { pa: u64, len: u64, prot: Prot, _pad: u64 = 0 
 // table without importing kmain, which would be a circular dependency) -
 // keep in sync if the kernel's load address or image size bound changes.
 pub const KERNEL_LOAD_ADDR: u64 = 0x4008_0000;
-// Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x200000;` pad
+// Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x600000;` pad
 // before .userpages - see that file's comment for why this needs to be a
-// hard boundary rather than a generous guess.
-pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0080_0000;
+// hard boundary rather than a generous guess. 6 MiB covers current BSS
+// (page tables, sched slots, scratch) with a little headroom; the linker
+// fails loudly if the image ever grows past this.
+pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0060_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
 pub const GIC_DIST_BASE: u64 = 0x0800_0000;
 pub const GIC_MMIO_LEN: u64 = 0x0002_0000; // covers both GICD and GICC windows
@@ -335,19 +373,29 @@ pub fn inheritExtraInTaskTables(pa: u64, len: u64, prot: Prot) void {
 // copies are safe again (Normal memory tolerates unaligned/wide accesses),
 // so unlike the boot-time code above these don't need the same care.
 
-const MAX_BOOT_PAGES = 8192;
-// linksection(".userpages"): deliberately placed outside the range
-// kernel_regions maps as kernel-only - see linker.ld and the module doc
-// comment for why sharing that range with task-owned pages is fatal.
+// Tiny emergency bump for any allocation that must happen before pmm.init.
+// Post-init, kmain installs setPageAllocator(pmm.allocPage) so this pool is
+// unused in normal boot. Kept in .userpages so pages stay outside
+// kernel_regions (user mappings must not collide with kernel-only PTEs).
+const MAX_BOOT_PAGES = 64;
 var page_pool: [MAX_BOOT_PAGES][PAGE_SIZE]u8 align(PAGE_SIZE) linksection(".userpages") = undefined;
 var page_pool_used: usize = 0;
 
+const PageAllocFn = *const fn () u64;
+var page_alloc_fn: ?PageAllocFn = null;
+
+/// Install the post-boot page allocator (typically pmm.allocPage). Must be
+/// called after pmm.init(). Avoids an mmu↔pmm import cycle.
+pub fn setPageAllocator(f: PageAllocFn) void {
+    page_alloc_fn = f;
+}
+
 /// Hands out a fresh, zeroed 4KB page and returns its physical (== virtual,
-/// under this milestone's identity mapping) address. A bump allocator over a
-/// static pool, same rationale as allocTable(): mm/pmm.zig's real allocator
-/// is a later milestone.
+/// under this milestone's identity mapping) address. Prefers the installed
+/// PMM hook; falls back to the tiny .userpages bump only before PMM is ready.
 pub fn allocPage() u64 {
-    if (page_pool_used >= MAX_BOOT_PAGES) @panic("mmu: out of boot pages");
+    if (page_alloc_fn) |f| return f();
+    if (page_pool_used >= MAX_BOOT_PAGES) @panic("mmu: out of boot pages (PMM not ready)");
     const p = &page_pool[page_pool_used];
     page_pool_used += 1;
     @memset(p, 0);

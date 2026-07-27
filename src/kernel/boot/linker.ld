@@ -42,13 +42,13 @@ SECTIONS
     __kernel_end = .;
     __image_size = __kernel_end - KERNEL_LOAD_ADDR;
 
-    /* Reserve a fixed 2MB for kernel-only content regardless of its actual
+    /* Reserve a fixed 6MB for kernel-only content regardless of its actual
      * size, so mm/mmu.zig's KERNEL_IMAGE_MAX_LEN can be a safe compile-time
      * constant that's guaranteed to stop before .userpages below - if the
-     * kernel ever actually grows past 2MB, this line makes the linker fail
+     * kernel ever actually grows past 6MB, this line makes the linker fail
      * loudly (location counter moving backward) instead of silently
      * reintroducing the page_pool/kernel_regions overlap bug. */
-    . = KERNEL_LOAD_ADDR + 0x800000;
+    . = KERNEL_LOAD_ADDR + 0x600000;
 
     /* Deliberately separate from .bss and placed after __kernel_end: pages
      * handed out by mm/mmu.zig's allocPage() (backing task code/data/stack
