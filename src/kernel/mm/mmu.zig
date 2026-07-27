@@ -382,3 +382,45 @@ pub fn switchTtbr0(table: *Table) void {
     asm volatile ("dsb ish");
     asm volatile ("isb");
 }
+
+// ---------------------------------------------------------------------------
+// COW support helpers
+// ---------------------------------------------------------------------------
+
+/// Clones the kernel mappings into a new page table. The new table inherits
+/// all kernel regions plus any extra regions, but has no user mappings.
+/// This is used by Vmm.fork() to create a child's address space.
+pub fn cloneKernelMappings() Table {
+    var new_root = Table.zeroed();
+    for (kernel_regions) |r| mapRange(&new_root, r.pa, r.pa, r.len, r.prot);
+    for (extra_kernel_regions[0..extra_kernel_region_count]) |r| {
+        mapRange(&new_root, r.pa, r.pa, r.len, r.prot);
+    }
+    return new_root;
+}
+
+/// Walks the page table to find the physical address mapped at `va`.
+/// Returns null if no valid mapping exists at that address.
+pub fn getPhysicalAddress(table: *Table, va: u64) ?u64 {
+    var t = table;
+    const shifts = [_]u6{ 39, 30, 21 };
+    for (shifts) |shift| {
+        const idx = (va >> shift) & 0x1ff;
+        const entry = t.entries[idx];
+        if (entry & 1 == 0) return null;
+        // Check if this is a block descriptor (level 1 or 2)
+        if (entry & DESC_TABLE == 0 and shift > 12) {
+            // Block descriptor - extract physical address
+            const block_size: u64 = if (shift == 30) 0x40000000 else 0x200000; // 1GB or 2MB
+            const offset = va & (block_size - 1);
+            return (entry & 0x0000_ffff_ffe0_0000) + offset;
+        }
+        t = @ptrFromInt(entry & 0x0000_ffff_ffff_f000);
+    }
+    // Level 3 - page descriptor
+    const idx = (va >> 12) & 0x1ff;
+    const entry = t.entries[idx];
+    if (entry & 1 == 0) return null;
+    const page_offset = va & 0xFFF;
+    return (entry & 0x0000_ffff_ffff_f000) + page_offset;
+}

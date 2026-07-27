@@ -67,7 +67,11 @@ fn blobNameSlice(name: *const [12]u8) []const u8 {
 fn readBlobIntoPages(name: []const u8, len: u32) struct { pa: u64, mapped_len: u64 } {
     const mapped_len = pageAlign(len);
     const pages = mapped_len / mmu.PAGE_SIZE;
-    const pa = if (pages == 0) mmu.allocPage() else pmm.allocPagesContig(pages);
+    const pa = if (pages == 0) mmu.allocPage() else blk: {
+        const p = pmm.allocPagesContig(pages);
+        if (p == 0) @panic("readBlobIntoPages: allocPagesContig failed");
+        break :blk p;
+    };
     const buf: [*]u8 = @ptrFromInt(pa);
     _ = fat.readFile(name, buf[0..len]) orelse {
         uart.print("opendarwin: rootfs: failed to read blob\n");
@@ -123,6 +127,7 @@ fn readFatFileIntoPages(name: []const u8, max_len: u64) ?[]const u8 {
     const mapped_len = pageAlign(max_len);
     const pages = mapped_len / mmu.PAGE_SIZE;
     const pa = pmm.allocPagesContig(pages);
+    if (pa == 0) return null;
     const buf: [*]u8 = @ptrFromInt(pa);
     const n = fat.readFile(name, buf[0..max_len]) orelse return null;
     return buf[0..n];

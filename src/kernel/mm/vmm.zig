@@ -1,3 +1,4 @@
+const std = @import("std");
 const mmu = @import("mmu.zig");
 const pmm = @import("pmm.zig");
 
@@ -19,11 +20,98 @@ const VM_PROT_ALL: u32 = 7;
 const VM_FLAGS_ANYWHERE: u32 = 1;
 const VM_FLAGS_OVERWRITE: u32 = 0x4000;
 
-const Vma = struct {
+/// VM region flags
+pub const VM_FLAG_COW: u32 = 0x100; // Region uses copy-on-write semantics
+pub const VM_FLAG_SHARED: u32 = 0x200; // Region is shared (MAP_SHARED)
+
+// ---------------------------------------------------------------------------
+// Shared memory registry — global named shared memory objects
+// ---------------------------------------------------------------------------
+
+const MAX_SHARED_REGIONS = 64;
+const MAX_NAME_LEN = 64;
+
+pub const SharedRegion = struct {
+    name: [MAX_NAME_LEN]u8 = undefined,
+    name_len: usize = 0,
+    physical_pages: ?u64 = null, // base PA of the shared pages
+    page_count: u64 = 0,
+    ref_count: u32 = 0, // number of processes mapping this region
+    in_use: bool = false,
+};
+
+var shared_regions: [MAX_SHARED_REGIONS]SharedRegion = undefined;
+
+/// Create or open a shared memory region by name.
+/// Returns the physical base address and page count of the shared region.
+/// If the region already exists, increments ref_count and returns existing pages.
+pub fn shmOpen(name: []const u8, page_count: u64) ?struct { pa: u64, pages: u64 } {
+    if (name.len >= MAX_NAME_LEN or name.len == 0) return null;
+
+    // Search for existing region
+    for (&shared_regions) |*sr| {
+        if (sr.in_use and sr.name_len == name.len and std.mem.eql(u8, sr.name[0..sr.name_len], name)) {
+            sr.ref_count += 1;
+            return .{ .pa = sr.physical_pages.?, .pages = sr.page_count };
+        }
+    }
+
+    // Create new region
+    for (&shared_regions) |*sr| {
+        if (!sr.in_use) {
+            // Allocate physical pages for the shared region
+            const pages = pmm.allocPages(page_count);
+            @memcpy(sr.name[0..name.len], name);
+            sr.name_len = name.len;
+            sr.physical_pages = pages.base;
+            sr.page_count = page_count;
+            sr.ref_count = 1;
+            sr.in_use = true;
+            return .{ .pa = pages.base, .pages = page_count };
+        }
+    }
+
+    return null; // no free slots
+}
+
+/// Close a shared memory region. If ref_count reaches 0, frees the pages.
+pub fn shmClose(name: []const u8) void {
+    for (&shared_regions) |*sr| {
+        if (sr.in_use and sr.name_len == name.len and std.mem.eql(u8, sr.name[0..sr.name_len], name)) {
+            sr.ref_count -= 1;
+            if (sr.ref_count == 0) {
+                // Free all pages
+                pmm.freePages(sr.physical_pages.?, sr.page_count);
+                sr.in_use = false;
+                sr.physical_pages = null;
+                sr.page_count = 0;
+            }
+            return;
+        }
+    }
+}
+
+/// Get info about a shared memory region.
+pub fn shmInfo(name: []const u8) ?struct { pa: u64, pages: u64, ref_count: u32 } {
+    for (shared_regions) |sr| {
+        if (sr.in_use and sr.name_len == name.len and std.mem.eql(u8, sr.name[0..sr.name_len], name)) {
+            return .{ .pa = sr.physical_pages.?, .pages = sr.page_count, .ref_count = sr.ref_count };
+        }
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// VMA and VMM
+// ---------------------------------------------------------------------------
+
+pub const Vma = struct {
     start: u64,
     end: u64,
     prot: mmu.Prot,
     flags: u32,
+    shared_name_len: u16 = 0, // length of shared name if VM_FLAG_SHARED is set
+    shared_name: [MAX_NAME_LEN]u8 = undefined,
 };
 
 pub const MachMapResult = struct { kr: u32, addr: u64 };
@@ -159,6 +247,57 @@ pub const Vmm = struct {
         return if (self.mapAnonymous(va, aligned_len, map_prot, @intCast(flags)) == KERN_SUCCESS) va else 0xffffffffffffffff;
     }
 
+    /// Map a shared memory region into this address space.
+    /// `pa` is the physical base of the shared pages, `page_count` is the number of pages.
+    pub fn mapShared(self: *Vmm, va: u64, pa: u64, page_count: u64, prot: mmu.Prot, name: []const u8) u32 {
+        if (self.region_count >= MAX_REGIONS) return KERN_NO_SPACE;
+
+        // Map each page
+        var i: u64 = 0;
+        while (i < page_count) : (i += 1) {
+            mmu.mapPages(self.ttbr0, va + i * PAGE_SIZE, pa + i * PAGE_SIZE, PAGE_SIZE, prot);
+        }
+
+        // Add region with shared flag
+        if (self.region_count >= MAX_REGIONS) return KERN_NO_SPACE;
+        var region = Vma{
+            .start = va,
+            .end = va + page_count * PAGE_SIZE,
+            .prot = prot,
+            .flags = VM_FLAG_SHARED,
+        };
+        if (name.len < MAX_NAME_LEN) {
+            @memcpy(region.shared_name[0..name.len], name);
+            region.shared_name_len = @intCast(name.len);
+        }
+        self.regions[self.region_count] = region;
+        self.region_count += 1;
+
+        return KERN_SUCCESS;
+    }
+
+    /// Unmap a shared region and release our reference to the shared memory.
+    pub fn unmapShared(self: *Vmm, name: []const u8) void {
+        var i: usize = 0;
+        while (i < self.region_count) {
+            const r = &self.regions[i];
+            if ((r.flags & VM_FLAG_SHARED) != 0 and r.shared_name_len == name.len and std.mem.eql(u8, r.shared_name[0..r.shared_name_len], name)) {
+                // Unmap the pages (but don't free physical - that's handled by shmClose)
+                var va = r.start;
+                while (va < r.end) : (va += PAGE_SIZE) {
+                    unmapPageNoFree(self.ttbr0, va);
+                }
+                mmu.switchTtbr0(self.ttbr0);
+
+                // Remove region
+                if (i < self.region_count - 1) self.regions[i] = self.regions[self.region_count - 1];
+                self.region_count -= 1;
+                continue;
+            }
+            i += 1;
+        }
+    }
+
     pub fn munmap(self: *Vmm, addr: u64, len: u64) i32 {
         const aligned_len = pageRound(len) orelse return -1;
         const end_overflow = @addWithOverflow(addr, aligned_len);
@@ -169,7 +308,14 @@ pub const Vmm = struct {
             const r = &self.regions[i];
             if (addr < r.end and end > r.start) {
                 if (addr <= r.start and end >= r.end) {
-                    unmapRange(self.ttbr0, r.start, r.end - r.start);
+                    if ((r.flags & VM_FLAG_SHARED) != 0) {
+                        // For shared regions, just unmap without freeing physical pages
+                        unmapRangeNoFree(self.ttbr0, r.start, r.end - r.start);
+                        // Release reference to shared memory
+                        shmClose(r.shared_name[0..r.shared_name_len]);
+                    } else {
+                        unmapRange(self.ttbr0, r.start, r.end - r.start, (r.flags & VM_FLAG_COW) != 0);
+                    }
                     if (i < self.region_count - 1) self.regions[i] = self.regions[self.region_count - 1];
                     self.region_count -= 1;
                     continue;
@@ -213,22 +359,153 @@ pub const Vmm = struct {
             }
             self.addRegion(cur_aligned, aligned, prot, 0);
         } else if (aligned < cur_aligned) {
-            unmapRange(self.ttbr0, aligned, cur_aligned - aligned);
+            unmapRange(self.ttbr0, aligned, cur_aligned - aligned, false);
         }
         self.brk_current = addr;
         return self.brk_current;
     }
+
+    // -----------------------------------------------------------------------
+    // COW (Copy-on-Write) support
+    // -----------------------------------------------------------------------
+
+    /// Fork this address space: clone all page table entries with COW semantics.
+    /// Both parent and child share all pages (refcount incremented).
+    /// All writable pages are marked read-only to catch writes (COW fault).
+    /// Returns a new Vmm with the cloned page tables.
+    pub fn fork(self: *const Vmm) Vmm {
+        // Create a new page table (inheriting kernel mappings)
+        var child_ttbr0 = mmu.cloneKernelMappings();
+
+        // For each region, clone the pages with COW
+        for (self.regions[0..self.region_count]) |r| {
+            // Map the region in the child's address space
+            var va = r.start;
+            while (va < r.end) : (va += PAGE_SIZE) {
+                // Get the physical page from parent
+                const parent_pa = mmu.getPhysicalAddress(self.ttbr0, va) orelse {
+                    va += PAGE_SIZE;
+                    continue;
+                };
+
+                // Increment refcount (sharing the page)
+                _ = pmm.refPage(parent_pa);
+
+                // Map in child with read-only to enable COW
+                var cow_prot = r.prot;
+                cow_prot.writable = false; // Force read-only for COW
+
+                // Map the same physical page in child's page table
+                mmu.mapPages(&child_ttbr0, va, parent_pa, PAGE_SIZE, cow_prot);
+            }
+
+            // Also mark parent's pages as read-only for COW
+            // (if they were writable)
+            if (r.prot.writable and (r.flags & VM_FLAG_SHARED) == 0) {
+                var ro_prot = r.prot;
+                ro_prot.writable = false;
+                remapRange(self.ttbr0, r.start, r.end - r.start, ro_prot);
+            }
+        }
+
+        // Create child VMM with cloned regions (mark all as COW)
+        var child = Vmm{
+            .ttbr0 = &child_ttbr0,
+            .brk_start = self.brk_start,
+            .brk_current = self.brk_current,
+            .next_mmap_hint = self.next_mmap_hint,
+        };
+
+        // Copy regions, adding COW flag to writable non-shared ones
+        for (self.regions[0..self.region_count]) |r| {
+            var flags = r.flags;
+            if (r.prot.writable and (flags & VM_FLAG_SHARED) == 0) {
+                flags |= VM_FLAG_COW;
+            }
+            child.addRegionWithShared(r.start, r.end, r.prot, flags, r.shared_name[0..r.shared_name_len]);
+        }
+
+        return child;
+    }
+
+    /// Helper: add region preserving shared name
+    fn addRegionWithShared(self: *Vmm, start: u64, end: u64, prot: mmu.Prot, flags: u32, name: []const u8) void {
+        if (self.region_count >= MAX_REGIONS) @panic("vmm: too many regions");
+        var region = Vma{ .start = start, .end = end, .prot = prot, .flags = flags };
+        if (name.len > 0 and name.len < MAX_NAME_LEN) {
+            @memcpy(region.shared_name[0..name.len], name);
+            region.shared_name_len = @intCast(name.len);
+        }
+        self.regions[self.region_count] = region;
+        self.region_count += 1;
+    }
+
+    /// Handle a COW (Copy-on-Write) fault at the given virtual address.
+    pub fn handleCowFault(self: *Vmm, fault_va: u64) bool {
+        const page_aligned_va = fault_va & ~(PAGE_SIZE - 1);
+
+        for (self.regions[0..self.region_count]) |*r| {
+            if (page_aligned_va >= r.start and page_aligned_va < r.end) {
+                // Check if this region is COW
+                if ((r.flags & VM_FLAG_COW) == 0) return false;
+
+                // Get the physical address of the faulting page
+                const old_pa = mmu.getPhysicalAddress(self.ttbr0, page_aligned_va) orelse return false;
+
+                // Split the COW page: allocate new, copy contents, unref old
+                const new_pa = pmm.splitCOWPage(old_pa);
+
+                // Remap in this process's page table with write permission
+                mmu.mapPages(self.ttbr0, page_aligned_va, new_pa, PAGE_SIZE, r.prot);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Check if a virtual address belongs to a COW region in this VMM.
+    pub fn isCowAddress(self: *const Vmm, va: u64) bool {
+        for (self.regions[0..self.region_count]) |r| {
+            if (va >= r.start and va < r.end) {
+                return (r.flags & VM_FLAG_COW) != 0;
+            }
+        }
+        return false;
+    }
+
+    /// Get the region containing a virtual address, if any.
+    pub fn getRegion(self: *const Vmm, va: u64) ?Vma {
+        for (self.regions[0..self.region_count]) |r| {
+            if (va >= r.start and va < r.end) return r;
+        }
+        return null;
+    }
 };
 
-fn unmapRange(table: *mmu.Table, va: u64, len: u64) void {
+// ---------------------------------------------------------------------------
+// Page table helpers
+// ---------------------------------------------------------------------------
+
+fn unmapRange(table: *mmu.Table, va: u64, len: u64, is_cow: bool) void {
     var off: u64 = 0;
     while (off < len) : (off += PAGE_SIZE) {
-        unmapPage(table, va + off);
+        unmapPage(table, va + off, is_cow);
     }
     mmu.switchTtbr0(table);
 }
 
-fn unmapPage(table: *mmu.Table, va: u64) void {
+/// Unmap range without freeing physical pages (for shared memory).
+fn unmapRangeNoFree(table: *mmu.Table, va: u64, len: u64) void {
+    var off: u64 = 0;
+    while (off < len) : (off += PAGE_SIZE) {
+        unmapPageNoFree(table, va + off);
+    }
+    mmu.switchTtbr0(table);
+}
+
+fn unmapPage(table: *mmu.Table, va: u64, is_cow: bool) void {
     var t = table;
     const shifts = [_]u6{ 39, 30, 21 };
     for (shifts) |shift| {
@@ -239,7 +516,28 @@ fn unmapPage(table: *mmu.Table, va: u64) void {
     }
     const idx = (va >> 12) & 0x1ff;
     const pa = t.entries[idx] & 0x0000fffffffff000;
-    if (pa != 0) pmm.freePage(pa);
+    if (pa != 0) {
+        if (is_cow) {
+            // Use refcount-aware free (may not actually free if shared)
+            _ = pmm.unrefPage(pa);
+        } else {
+            pmm.freePage(pa);
+        }
+    }
+    t.entries[idx] = 0;
+}
+
+/// Unmap page without freeing physical (for shared memory).
+fn unmapPageNoFree(table: *mmu.Table, va: u64) void {
+    var t = table;
+    const shifts = [_]u6{ 39, 30, 21 };
+    for (shifts) |shift| {
+        const idx = (va >> shift) & 0x1ff;
+        const entry = t.entries[idx];
+        if (entry & 1 == 0) return;
+        t = @ptrFromInt(entry & 0x0000fffffffff000);
+    }
+    const idx = (va >> 12) & 0x1ff;
     t.entries[idx] = 0;
 }
 
