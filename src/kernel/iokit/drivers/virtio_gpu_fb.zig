@@ -55,6 +55,8 @@ fn attachAndStart(provider: *service.IOService) types.IOReturn {
         attached = false;
         return rc;
     }
+    // Publish so IOServiceGetMatchingService("IOFramebuffer") can find us.
+    _ = registry.publish(instance.asService());
     return types.kIOReturnSuccess;
 }
 
@@ -90,14 +92,21 @@ fn start(svc: *service.IOService, provider: *service.IOService) types.IOReturn {
         return types.kIOReturnNoDevice;
     }
 
-    const display = virtio_gpu.displayInfo();
+    if (!virtio_gpu.setupScanout()) {
+        uart.print("opendarwin: VirtioGpuFramebuffer: scanout setup failed\n");
+        return types.kIOReturnNoMemory;
+    }
+
+    const scan = virtio_gpu.scanoutInfo() orelse return types.kIOReturnNotReady;
     instance.fb.mode = .{
-        .width = display.width,
-        .height = display.height,
+        .width = scan.width,
+        .height = scan.height,
         .depth = 32,
     };
+    instance.fb.aperture_base = virtio_gpu.apertureBase();
+    instance.fb.aperture_length = virtio_gpu.apertureLength();
     instance.fb.pixels = .{
-        .bytes_per_row = display.width * 4,
+        .bytes_per_row = scan.stride,
         .bytes_per_pixel = 4,
         .pixel_type = 0,
     };

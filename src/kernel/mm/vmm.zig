@@ -231,6 +231,18 @@ pub const Vmm = struct {
         return .{ .kr = self.mapAnonymous(va, aligned_len, prot, flags), .addr = va };
     }
 
+    /// Map a contiguous physical range into this address space (no page ownership).
+    /// Used for the virtio-gpu scanout aperture shared with userspace.
+    pub fn mapPhysical(self: *Vmm, pa: u64, len: u64) u64 {
+        const aligned_len = pageRound(len) orelse return 0;
+        const page_count = aligned_len / PAGE_SIZE;
+        const va = self.findFreeRange(aligned_len);
+        if (va == 0) return 0;
+        const prot = mmu.Prot{ .writable = true, .executable = false, .user = true };
+        if (self.mapShared(va, pa, page_count, prot, "od-fb") != KERN_SUCCESS) return 0;
+        return va;
+    }
+
     pub fn mmap(self: *Vmm, hint: u64, len: u64, prot_val: i32, flags: i32) u64 {
         const aligned_len = pageRound(len) orelse return 0xffffffffffffffff;
         var va = if (hint != 0 and hint % PAGE_SIZE == 0) hint else 0;
