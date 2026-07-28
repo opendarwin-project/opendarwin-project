@@ -1,6 +1,6 @@
 //! Host tool: prepares a FAT32 rootfs image containing a target Mach-O
 //! binary (e.g. /bin/sh) plus the small sparse slices of the real macOS
-//! dyld shared cache it needs, for src/kernel/loader/{macho,dyld,
+//! dyld shared cache it needs, for kernel/src/loader/{macho,dyld,
 //! shared_cache}.zig to load and dynamically link at boot - see those
 //! modules' doc comments for the format background this mirrors.
 //!

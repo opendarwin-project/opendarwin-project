@@ -4,7 +4,7 @@ Your kernel has the core pieces plus an IOKit-compatible layer:
 
 - conduit handles device discovery (DTB/Registry) and provides Zig driver
   implementations (virtio_blk, virtio_gpu)
-- Zig IOKit core (`src/kernel/iokit/`) provides IORegistryEntry / IOService
+- Zig IOKit core (`kernel/src/iokit/`) provides IORegistryEntry / IOService
   vtables, IOPCIDevice, IOFramebuffer, IOAccelerator, and matching
 - C ABI exports (`iokit/compat.zig`) + C++ shim headers (`compat/IOKit/`)
 - Display bind: built-in `VirtioGpuFramebuffer` matches published IOPCIDevice
@@ -31,7 +31,7 @@ Zero C++ in the kernel build.
 
 ### Layer 3: Zig Driver Authoring — DONE for virtio-gpu
 
-`src/kernel/iokit/drivers/virtio_gpu_fb.zig` implements IOFramebuffer and
+`kernel/src/iokit/drivers/virtio_gpu_fb.zig` implements IOFramebuffer and
 owns conduit bind/start.
 
 Migration Path

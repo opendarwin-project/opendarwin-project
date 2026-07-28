@@ -27,13 +27,13 @@ Method dispatch for getInfo (index 0) and present (index 1) goes through
 trap 100. Match / open / mapMemory still use simplified mach_msg RPCs.
 
 Kernel: `VirtioGpuFramebuffer` publishes into the IORegistry; UserClient
-ports carry IOKit kobjects (`src/kernel/iokit/user_client.zig`,
+ports carry IOKit kobjects (`kernel/src/iokit/user_client.zig`,
 `mach_server.zig`).
 
 ## Userspace
 
 Headers: [`include/IOKit/IOKitLib.h`](../include/IOKit/IOKitLib.h)  
-libSystem: [`src/iokit/iokit.zig`](../src/iokit/iokit.zig) (IOKit.framework dylib)
+libSystem: [`iokit/src/iokit.zig`](../iokit/src/iokit.zig) (IOKit.framework dylib)
 
 ## Prism
 

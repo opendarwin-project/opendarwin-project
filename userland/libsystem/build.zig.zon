@@ -1,0 +1,17 @@
+.{
+    .name = .libsystem,
+    .version = "0.0.0",
+    .fingerprint = 0xf75c306a272d7bfe,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{
+        .dyld = .{
+            .path = "../dyld",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

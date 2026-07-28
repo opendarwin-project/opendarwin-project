@@ -146,7 +146,7 @@ Each tier is independently linkable and testable with a small guest smoke.
 - **Tier 3 — errors/URLs/plists:** `CFError.c`, `CFURL.c`,
   `CFPropertyList.c`, `CFBinaryPList.c`, `CFXMLPreferencesParser`-free subset.
   Unlocks reading real `Info.plist`s in userland, which pairs with the kernel's
-  existing `src/kernel/kext/plist.zig`.
+  existing `kernel/src/kext/plist.zig`.
 - **Tier 4 — time:** `CFDate.c`, `CFCalendar`/`CFTimeZone` (tzdata-dependent;
   stub `CFTimeZoneCopySystem` to UTC first).
 - **Tier 5 — run loop:** `CFRunLoop.c`, `CFMachPort.c`, `CFSocket.c`,
@@ -166,7 +166,7 @@ there (`malloc`/`free`/`realloc`/`malloc_size`, `mmap`, `pthread_create`,
 `__ulock_*`, `clock_gettime`, the openat/stat/dirent family, and — usefully —
 the `dispatch_*` shims, which CF uses for `CFRunLoop`/`CFStream` timers).
 
-What CF will demand that `src/libsystem` does **not** have yet, roughly in the
+What CF will demand that `libsystem/src` does **not** have yet, roughly in the
 order the tiers hit it:
 
 1. **stdio/formatting** — `vsnprintf`/`snprintf`/`asprintf`, `fprintf` to
@@ -199,7 +199,7 @@ Notably absent from that list: ICU, notify, xpc, Security, objc. Keeping tiers
 ## Kernel VFS (prerequisite for CF file I/O)
 
 Userspace `open`/`read`/`lseek`/`stat` now go through a minimal XNU/BSD-shaped
-VFS (`src/kernel/fs/vfs.zig` + `namei.zig`) with FAT as the first filesystem
+VFS (`kernel/src/fs/vfs.zig` + `namei.zig`) with FAT as the first filesystem
 backend. The early boot loader still uses `fat.readFile` / `vfs.readFile`;
 libSystem's stdio path is live for absolute paths on the read-only rootfs.
 Still missing for CFFileUtilities / CFURL: `opendir`/`readdir` /
@@ -223,7 +223,7 @@ or by hand against any objects/archives/dylibs:
 
 It prints the still-unresolved symbols grouped by subsystem (malloc / pthread /
 mach / stdio / ICU / ...), so each iteration is "pick a group, implement it in
-`src/libsystem`, rerun". Exit status is non-zero while anything is missing, so
+`libsystem/src`, rerun". Exit status is non-zero while anything is missing, so
 it can become a CI/build step once CF is wired into `build.zig`.
 
 Next build step, once the gap closes: turn `addCoreFoundation()`'s static
@@ -242,4 +242,4 @@ else: `CGSSetWindowProperty` currently takes a raw C string because we have no
 `CFStringRef`, `CFNotificationCenter` is how AppKit-ish clients would talk to
 SkyLight, and `CFRunLoop` (tier 5) is the missing piece behind
 `[NSApplication run]`, which `tools/darwin_window_smoke.zig` calls on the host
-and `src/userland/window_smoke.zig` cannot yet.
+and `userland/src/window_smoke.zig` cannot yet.

@@ -5,7 +5,7 @@
 - IOSurface-shaped / Metal-compatible layer in Prism
 - Richer CF matching dicts + complex mach_msg port descriptors for IOKit MIG
 - Run `fb-smoke` / `window-smoke` as guest MAIN to verify QEMU scanout via IOKitLib + trap 100
-- SkyLight (src/skylight): move the compositor out of the client process into a
+- SkyLight (skylight/src): move the compositor out of the client process into a
   real WindowServer task, with the CGS* exports becoming Mach RPC stubs
 - SkyLight: damage regions (CGSFlushWindow currently recomposites everything),
   CGSSetWindowShape/clip regions, and title-bar text (needs a bitmap font)
@@ -30,7 +30,7 @@
     __CF*Class slots), or build the non-ICU ones
   - link CoreFoundation as a dylib with -sectcreate __UNICODE (tables ship in
     the dependency's CharacterSets/) + a `cf-smoke` userland program
-  - replace the hand-rolled IOKit matching dicts in src/iokit/iokit.zig
+  - replace the hand-rolled IOKit matching dicts in iokit/src/iokit.zig
     with real CFMutableDictionaryRef now that CFDictionary builds
   - CFRunLoop/CFMachPort once mach_port_allocate + complex descriptors exist
 - VFS follow-ups: openat/cwd, getdirentries64, vnode write path when a

@@ -1,0 +1,18 @@
+.{
+    .name = .iokit,
+    .version = "0.0.0",
+    .fingerprint = 0x9690447e15cf949b,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{
+        .libsystem = .{
+            .path = "../libsystem",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+    },
+}

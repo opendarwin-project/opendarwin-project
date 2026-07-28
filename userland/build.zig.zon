@@ -1,0 +1,24 @@
+.{
+    .name = .userland,
+    .version = "0.0.0",
+    .fingerprint = 0xe7dada9b3cfbdf5,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{
+        .iokit = .{
+            .path = "iokit",
+        },
+        .skylight = .{
+            .path = "skylight",
+        },
+        .oksh = .{
+            .url = "git+https://github.com/ibara/oksh#15f69e430e27eebee4dd9eb5c1fd570804ab15bd",
+            .hash = "N-V-__8AAPG4DwDK_8bstoXanOmucH8CxfAw9ewPjueiaqEk",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "programs",
+    },
+}

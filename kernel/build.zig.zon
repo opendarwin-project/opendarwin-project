@@ -1,0 +1,26 @@
+.{
+    .name = .kernel,
+    .version = "0.0.0",
+    .fingerprint = 0x5dd29aab97af41b5,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{
+        .conduit = .{
+            .path = "../deps/conduit",
+        },
+        .dtree = .{
+            .url = "git+https://github.com/Midstall/dtree#974e557da3c6426eaf2b3284c26ff8740163d954",
+            .hash = "dtree-0.1.0-76to8JyYAABD4L0wHIrSVlX-2X-5f72L7Odt0PvXrJeu",
+        },
+        .xml = .{
+            .url = "git+https://github.com/ianprime0509/zig-xml.git#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
+            .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+    },
+}

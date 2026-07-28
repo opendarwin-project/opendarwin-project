@@ -1,0 +1,17 @@
+.{
+    .name = .skylight,
+    .version = "0.0.0",
+    .fingerprint = 0x4f59a6e6f87c83e3,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{
+        .iokit = .{
+            .path = "../iokit",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

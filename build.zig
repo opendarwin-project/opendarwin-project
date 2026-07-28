@@ -7,50 +7,12 @@ fn addKernel(
     /// When set, qemu waits for this step before booting (smoke rootfs rebuild).
     rootfs_depend: ?*std.Build.Step,
 ) void {
-    const kernel_target = b.resolveTargetQuery(.{
-        .cpu_arch = .aarch64,
-        .os_tag = .freestanding,
-        .abi = .none,
-        .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.cortex_a72 },
-    });
-
-    const conduit_dep = b.dependency("conduit", .{
-        .target = kernel_target,
-        .optimize = optimize,
-    });
-
-    const dtree_dep = b.dependency("dtree", .{
-        .target = kernel_target,
-        .optimize = optimize,
-    });
-
-    const xml_dep = b.dependency("xml", .{
-        .target = kernel_target,
-        .optimize = optimize,
-    });
-
-    const kernel_mod = b.createModule(.{
-        .root_source_file = b.path("src/kernel/kmain.zig"),
-        .target = kernel_target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "conduit", .module = conduit_dep.module("conduit") },
-            .{ .name = "dtree", .module = dtree_dep.module("dtree") },
-            .{ .name = "xml", .module = xml_dep.module("xml") },
-        },
-    });
-    kernel_mod.addIncludePath(b.path("src/kernel/arch/aarch64"));
-    kernel_mod.addAssemblyFile(b.path("src/kernel/boot/start.S"));
-    kernel_mod.addAssemblyFile(b.path("src/kernel/arch/aarch64/vectors.S"));
-    kernel_mod.addAssemblyFile(b.path("src/kernel/arch/aarch64/task_entry.S"));
-
-    const kernel_exe = b.addExecutable(.{
-        .name = "opendarwin-kernel",
-        .root_module = kernel_mod,
-    });
-    kernel_exe.setLinkerScript(b.path("src/kernel/boot/linker.ld"));
-    kernel_exe.entry = .{ .symbol_name = "_start" };
-
+    // The kernel is its own package (see kernel/build.zig): a freestanding
+    // aarch64 executable with its own conduit/dtree/xml dependencies. This
+    // package only needs the finished ELF to objcopy it to a raw binary and
+    // boot it in QEMU.
+    const kernel_dep = b.dependency("kernel", .{ .optimize = optimize });
+    const kernel_exe = kernel_dep.artifact("opendarwin-kernel");
     b.installArtifact(kernel_exe);
 
     // QEMU's arm_setup_direct_kernel_boot() (hw/arm/boot.c) hardcodes
@@ -109,18 +71,18 @@ fn addKernel(
 // Host-side tool (native target, not the freestanding kernel one): prepares
 // a FAT rootfs image from a real macOS dyld shared cache - see
 // tools/prepare_shared_cache.zig's module doc comment. Reuses
-// src/kernel/loader/{shared_cache,rootfs_manifest}.zig directly (both are
+// kernel/src/loader/{shared_cache,rootfs_manifest}.zig directly (both are
 // plain byte-parsing code with no freestanding-only dependencies), imported
 // as named modules since Zig 0.16 disallows a module's relative imports
 // climbing outside its own root directory.
 fn addPrepareSharedCacheTool(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     const shared_cache_mod = b.createModule(.{
-        .root_source_file = b.path("src/kernel/loader/shared_cache.zig"),
+        .root_source_file = b.path("kernel/src/loader/shared_cache.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
     const rootfs_manifest_mod = b.createModule(.{
-        .root_source_file = b.path("src/kernel/loader/rootfs_manifest.zig"),
+        .root_source_file = b.path("kernel/src/loader/rootfs_manifest.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
@@ -168,54 +130,40 @@ fn addDarwinWindowSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode) void 
     run_step.dependOn(&run.step);
 }
 
-fn addMinimalLibSystem(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    const libsystem_target = b.resolveTargetQuery(.{
-        .cpu_arch = .aarch64,
-        .os_tag = .macos,
-        .abi = .none,
-    });
-
-    const libsystem_mod = b.createModule(.{
-        .root_source_file = b.path("src/libsystem/libsystem.zig"),
-        .target = libsystem_target,
-        .optimize = optimize,
-        .link_libc = false,
-    });
-
-    const libsystem = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "System",
-        .root_module = libsystem_mod,
-    });
-    // Real dylib goes in the guest rootfs for runtime. Link consumers against
-    // Zig's vendored libSystem.tbd (resolveLibSystem), not this artifact —
-    // linkLibrary() would emit a second LC_LOAD_DYLIB with the same install name.
-    libsystem.install_name = "/usr/lib/libSystem.B.dylib";
-    libsystem.linker_allow_shlib_undefined = true;
-    libsystem.dead_strip_dylibs = true;
-
-    const install = b.addInstallArtifact(libsystem, .{
+// Fetches an already-built dylib artifact from a sibling package (see
+// kernel/libsystem/iokit/skylight's own build.zig, each with its own
+// build.zig.zon) and re-installs it under this repo's zig-out with the real
+// Darwin filename the guest rootfs / dyld-style loader expects.
+fn installDylib(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    dep_name: []const u8,
+    artifact_name: []const u8,
+    dest_sub_path: []const u8,
+    step_name: []const u8,
+    step_description: []const u8,
+) *std.Build.Step.Compile {
+    const dep = b.dependency(dep_name, .{ .optimize = optimize });
+    const lib = dep.artifact(artifact_name);
+    const install = b.addInstallArtifact(lib, .{
         .dest_dir = .{ .override = .{ .custom = "lib" } },
-        .dest_sub_path = "libSystem.B.dylib",
+        .dest_sub_path = dest_sub_path,
     });
     b.getInstallStep().dependOn(&install.step);
 
-    const step = b.step("libsystem", "Build the minimal FOSS libSystem.B.dylib for aarch64-macos");
+    const step = b.step(step_name, step_description);
     step.dependOn(&install.step);
-    return libsystem;
+    return lib;
 }
 
-/// One guest userland program: built for aarch64-macos against our own
-/// libSystem (and optionally SkyLight / IOKit), installed into zig-out/userland, and
-/// selectable as the rootfs MAIN via `-Dmain=<name>`.
+/// One guest userland program, built by the `userland` package (see
+/// userland/build.zig): fetched here by name and re-installed into
+/// zig-out/userland, selectable as the rootfs MAIN via `-Dmain=<name>`.
 const UserlandProgram = struct {
     name: []const u8,
-    source: []const u8,
     description: []const u8,
     /// Guest path inside the FAT rootfs.
     guest_path: []const u8,
-    needs_skylight: bool = false,
-    needs_iokit: bool = false,
 };
 
 const BuiltUserland = struct {
@@ -226,142 +174,43 @@ const BuiltUserland = struct {
 const userland_programs = [_]UserlandProgram{
     .{
         .name = "zig-smoke",
-        .source = "src/userland/threads.zig",
         .description = "a tiny aarch64-macos Zig executable linked to minimal libSystem",
         .guest_path = "bin/zig-smoke",
     },
     .{
         .name = "fb-smoke",
-        .source = "src/userland/fb_smoke.zig",
         .description = "guest IOKit framebuffer present smoke",
         .guest_path = "bin/fb-smoke",
-        .needs_iokit = true,
     },
     .{
         .name = "window-smoke",
-        .source = "src/userland/window_smoke.zig",
         .description = "guest SkyLight/CGS window composite smoke",
         .guest_path = "bin/window-smoke",
-        .needs_skylight = true,
+    },
+    .{
+        .name = "oksh",
+        .description = "portable OpenBSD ksh shell (ibara/oksh)",
+        .guest_path = "bin/sh",
     },
 };
 
-fn addUserlandProgram(
-    b: *std.Build,
-    optimize: std.builtin.OptimizeMode,
-    program: UserlandProgram,
-    skylight: *std.Build.Step.Compile,
-    iokit: *std.Build.Step.Compile,
-) *std.Build.Step.Compile {
-    const guest_target = b.resolveTargetQuery(.{
-        .cpu_arch = .aarch64,
-        .os_tag = .macos,
-        .abi = .none,
-    });
+fn addUserlandPrograms(b: *std.Build, optimize: std.builtin.OptimizeMode) [userland_programs.len]BuiltUserland {
+    const userland_dep = b.dependency("userland", .{ .optimize = optimize });
 
-    const mod = b.createModule(.{
-        .root_source_file = b.path(program.source),
-        .target = guest_target,
-        .optimize = optimize,
-        .link_libc = false,
-    });
+    var programs: [userland_programs.len]BuiltUserland = undefined;
+    for (userland_programs, 0..) |p, i| {
+        const exe = userland_dep.artifact(p.name);
+        const install = b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = "userland" } },
+        });
+        b.getInstallStep().dependOn(&install.step);
 
-    const exe = b.addExecutable(.{
-        .name = program.name,
-        .root_module = mod,
-    });
-    // libSystem comes from Zig's vendored TBD at link time (one LC_LOAD_DYLIB).
-    // FOSS dylibs (IOKit, SkyLight, libSystem) load from the rootfs at runtime.
-    if (program.needs_iokit) mod.linkLibrary(iokit);
-    if (program.needs_skylight) mod.linkLibrary(skylight);
+        const step = b.step(p.name, b.fmt("Build {s}", .{p.description}));
+        step.dependOn(&install.step);
 
-    const install = b.addInstallArtifact(exe, .{
-        .dest_dir = .{ .override = .{ .custom = "userland" } },
-    });
-    b.getInstallStep().dependOn(&install.step);
-
-    const step = b.step(program.name, b.fmt("Build {s}", .{program.description}));
-    step.dependOn(&install.step);
-    return exe;
-}
-
-// (fb-smoke / window-smoke / zig-smoke all come from userland_programs above.)
-
-// IOKit.framework replacement: Darwin IOKitLib (src/iokit/*.zig).  Built as its
-// own dylib with Apple's install name; malloc/free resolve through libSystem at
-// runtime.
-fn addIOKit(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    const iokit_target = b.resolveTargetQuery(.{
-        .cpu_arch = .aarch64,
-        .os_tag = .macos,
-        .abi = .none,
-    });
-
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/iokit/iokit.zig"),
-        .target = iokit_target,
-        .optimize = optimize,
-        .link_libc = false,
-    });
-
-    const lib = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "IOKit",
-        .root_module = mod,
-    });
-    lib.install_name = "/System/Library/Frameworks/IOKit.framework/IOKit";
-    lib.linker_allow_shlib_undefined = true;
-    lib.dead_strip_dylibs = true;
-
-    const install = b.addInstallArtifact(lib, .{
-        .dest_dir = .{ .override = .{ .custom = "lib" } },
-        .dest_sub_path = "IOKit",
-    });
-    b.getInstallStep().dependOn(&install.step);
-
-    const step = b.step("iokit", "Build the FOSS IOKit.framework for aarch64-macos");
-    step.dependOn(&install.step);
-    return lib;
-}
-
-// SkyLight.framework replacement: the CGS* window-server API implemented on
-// top of our IOKit framebuffer (src/skylight/*.zig).  Built as its own dylib
-// with Apple's install name so std.DynLib consumers (Prism's
-// platform/darwin.zig) find it at the usual path inside the guest rootfs.
-fn addSkyLight(b: *std.Build, optimize: std.builtin.OptimizeMode, iokit: *std.Build.Step.Compile) *std.Build.Step.Compile {
-    const skylight_target = b.resolveTargetQuery(.{
-        .cpu_arch = .aarch64,
-        .os_tag = .macos,
-        .abi = .none,
-    });
-
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/skylight/skylight.zig"),
-        .target = skylight_target,
-        .optimize = optimize,
-        .link_libc = false,
-    });
-
-    const lib = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "SkyLight",
-        .root_module = mod,
-    });
-    lib.install_name = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight";
-    // TBD supplies System at link time; IOKit + real SkyLight dylibs are for the rootfs.
-    mod.linkLibrary(iokit);
-    lib.linker_allow_shlib_undefined = true;
-    lib.dead_strip_dylibs = true;
-
-    const install = b.addInstallArtifact(lib, .{
-        .dest_dir = .{ .override = .{ .custom = "lib" } },
-        .dest_sub_path = "SkyLight",
-    });
-    b.getInstallStep().dependOn(&install.step);
-
-    const step = b.step("skylight", "Build the FOSS SkyLight/CGS window server for aarch64-macos");
-    step.dependOn(&install.step);
-    return lib;
+        programs[i] = .{ .meta = p, .exe = exe };
+    }
+    return programs;
 }
 
 // CoreFoundation: upstream swift-corelibs-foundation C sources (fetched via
@@ -374,6 +223,10 @@ fn addSkyLight(b: *std.Build, optimize: std.builtin.OptimizeMode, iokit: *std.Bu
 // IOKit matching-dictionary code with real CFDictionaryRef/CFStringRef/
 // CFNumberRef objects.  Higher tiers (CFDate, CFURL, CFPropertyList,
 // CFRunLoop) are deliberately left out; see docs/corefoundation.md.
+//
+// CoreFoundation stays under the repo-wide `src/` directory (not its own
+// top-level package) since it's still a stub-heavy work in progress; see
+// TODO.md.
 const corefoundation_sources = [_][]const u8{
     "Base.subproj/CFBase.c",
     "Base.subproj/CFRuntime.c",
@@ -508,9 +361,11 @@ fn addCoreFoundation(b: *std.Build, optimize: std.builtin.OptimizeMode) ?*std.Bu
 }
 
 // Host-side unit tests for the compositor core (pure pixel math, no Mach).
+// (skylight/build.zig also exposes an equivalent `zig build test` runnable
+// directly from that package.)
 fn addSkyLightTests(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/skylight/compositor.zig"),
+        .root_source_file = b.path("skylight/src/compositor.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
@@ -526,6 +381,7 @@ fn addZigSmokeRootfs(
     main_name: []const u8,
     programs: []const BuiltUserland,
     libsystem: *std.Build.Step.Compile,
+    dyld: *std.Build.Step.Compile,
     iokit: *std.Build.Step.Compile,
     skylight: *std.Build.Step.Compile,
 ) *std.Build.Step {
@@ -535,6 +391,7 @@ fn addZigSmokeRootfs(
     const image = make_img.addOutputFileArg(smoke_rootfs_basename);
     make_img.addArg("--multi");
     make_img.addPrefixedFileArg("usr/lib/libSystem.B.dylib=", libsystem.getEmittedBin());
+    make_img.addPrefixedFileArg("usr/lib/system/libdyld.dylib=", dyld.getEmittedBin());
     make_img.addPrefixedFileArg(
         "System/Library/Frameworks/IOKit.framework/IOKit=",
         iokit.getEmittedBin(),
@@ -575,22 +432,24 @@ pub fn build(b: *std.Build) void {
 
     const rootfs_opt = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
     // null when unset — so `qemu -Dmain=fb-smoke` can imply the smoke rootfs.
-    const main_opt = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke)");
+    const main_opt = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke, oksh)");
     const main_name = main_opt orelse "zig-smoke";
 
     addPrepareSharedCacheTool(b, optimize);
     addDarwinWindowSmoke(b, optimize);
-    const libsystem = addMinimalLibSystem(b, optimize);
-    const iokit = addIOKit(b, optimize);
-    const skylight = addSkyLight(b, optimize, iokit);
+
+    // Each of libsystem/iokit/skylight is its own package (own build.zig +
+    // build.zig.zon); fetch the finished dylib and re-install it here with
+    // its real Darwin path so the guest rootfs / kernel dylib loader see it.
+    const libsystem = installDylib(b, optimize, "libsystem", "System", "libSystem.B.dylib", "libsystem", "Build the minimal FOSS libSystem.B.dylib for aarch64-macos");
+    const dyld = installDylib(b, optimize, "dyld", "dyld", "system/libdyld.dylib", "dyld", "Build the FOSS libdyld.dylib (dyld introspection) for aarch64-macos");
+    const iokit = installDylib(b, optimize, "iokit", "IOKit", "IOKit", "iokit", "Build the FOSS IOKit.framework for aarch64-macos");
+    const skylight = installDylib(b, optimize, "skylight", "SkyLight", "SkyLight", "skylight", "Build the FOSS SkyLight/CGS window server for aarch64-macos");
     _ = addCoreFoundation(b, optimize);
 
-    var programs: [userland_programs.len]BuiltUserland = undefined;
-    for (userland_programs, 0..) |p, i| {
-        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit) };
-    }
+    const programs = addUserlandPrograms(b, optimize);
     addSkyLightTests(b, optimize);
-    const rootfs_step = addZigSmokeRootfs(b, main_name, programs[0..], libsystem, iokit, skylight);
+    const rootfs_step = addZigSmokeRootfs(b, main_name, programs[0..], libsystem, dyld, iokit, skylight);
 
     const smoke_img_path = b.fmt("{s}/{s}", .{ b.install_path, smoke_rootfs_basename });
     // -Dmain without -Drootfs => rebuild smoke image and attach it to qemu.

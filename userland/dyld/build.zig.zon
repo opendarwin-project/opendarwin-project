@@ -1,0 +1,13 @@
+.{
+    .name = .dyld,
+    .version = "0.0.0",
+    .fingerprint = 0x4db76d7d2da1174a,
+    .minimum_zig_version = "0.16.0",
+    .maximum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
