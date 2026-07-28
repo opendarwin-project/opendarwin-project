@@ -1,0 +1,21 @@
+name: Matrix Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+      - name: Setup Zig
+        uses: xyzzylabs/setup-zig@v1
+        with:
+          cache-key: ubuntu-latest-debug
+      - name: Build and Test
+        run: zig build
