@@ -1,0 +1,11 @@
+[package]
+name = "metalc-host-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host Metal smoke test for metalc-produced metallibs"
+publish = false
+
+[dependencies]
+air-bitcode = { workspace = true }
+metallib = { workspace = true }
