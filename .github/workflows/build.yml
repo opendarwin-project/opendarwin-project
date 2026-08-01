@@ -27,7 +27,7 @@ jobs:
               run: cargo check --workspace
 
             - name: Test
-              # Host Metal / metal-as integration tests are cfg(target_os = "macos") only.
+              # Host Metal integration tests are cfg(target_os = "macos") only.
               run: cargo test --workspace
 
             - name: Clippy
