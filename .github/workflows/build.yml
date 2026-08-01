@@ -1,34 +1,34 @@
-name: Matrix Build
+name: Rust
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
+    pull_request:
+    push:
+        branches:
+            - main
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+    test:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
 
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
-      # TODO: replace with upstream repos in build.zig.zon
-      - name: Checkout Prism
-        uses: actions/checkout@v6
-        with:
-          repository: theoparis/prism
-          path: deps/prism
-      - name: Checkout Conduit
-        uses: actions/checkout@v6
-        with:
-          repository: theoparis/conduit
-          path: deps/conduit
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - name: Setup Zig
-        uses: xyzzylabs/setup-zig@v1
-        with:
-          cache-key: ubuntu-latest-debug
+            - name: Cache cargo
+              uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: rust/metalc -> target
 
-      - name: Build and Test
-        run: zig build
+            - name: Check
+              run: cargo check --workspace
+
+            - name: Test
+              # Host Metal / metal-as integration tests are cfg(target_os = "macos") only.
+              run: cargo test --workspace
+
+            - name: Clippy
+              run: cargo clippy --workspace --all-targets
