@@ -1,0 +1,12 @@
+[package]
+name = "dialect-metal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level Metal compute dialect (pliron)"
+
+[dependencies]
+pliron = { workspace = true }
+pliron-derive = { workspace = true }
+air-bitcode = { workspace = true }
+awint = "0.17"

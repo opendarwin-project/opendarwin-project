@@ -1,0 +1,10 @@
+[package]
+name = "metal-transforms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Transforms on dialect-metal IR"
+
+[dependencies]
+pliron = { workspace = true }
+dialect-metal = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "dialect-air"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AIR-oriented attributes and helpers for Metal lowering"
+
+[dependencies]
+pliron = { workspace = true }
+pliron-derive = { workspace = true }
+air-bitcode = { workspace = true }
