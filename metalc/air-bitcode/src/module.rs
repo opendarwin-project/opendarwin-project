@@ -87,6 +87,16 @@ pub enum Inst {
         lhs: Val,
         rhs: Val,
     },
+    Fsub {
+        dest: String,
+        lhs: Val,
+        rhs: Val,
+    },
+    Fmul {
+        dest: String,
+        lhs: Val,
+        rhs: Val,
+    },
     RetVoid,
 }
 

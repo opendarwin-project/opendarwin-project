@@ -9,6 +9,9 @@ publish = false
 [dependencies]
 air-bitcode = { workspace = true }
 metallib = { workspace = true }
+dialect-metal = { workspace = true }
+metal-lower = { workspace = true }
+pliron = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc", "objc2", "block2"] }

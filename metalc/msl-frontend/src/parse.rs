@@ -304,11 +304,20 @@ impl<'a> Parser<'a> {
 
     fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.parse_primary()?;
-        while self.try_eat("+") {
+        loop {
+            let op = if self.try_eat("+") {
+                BinOp::Add
+            } else if self.try_eat("-") {
+                BinOp::Sub
+            } else if self.try_eat("*") {
+                BinOp::Mul
+            } else {
+                break;
+            };
             let rhs = self.parse_primary()?;
             let span = expr_span(&lhs).start..expr_span(&rhs).end;
             lhs = Expr::Binary {
-                op: BinOp::Add,
+                op,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
                 span,

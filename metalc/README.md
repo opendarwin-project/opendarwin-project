@@ -39,7 +39,11 @@ Workspace root is the repo root (`Cargo.toml`). Goldens live in `/testdata`.
 
 ## MSL subset (MVP)
 
-Accepts `testdata/add_one.metal`-shaped kernels: optional `#include` /
-`using namespace metal;`, one `kernel void` with `device` float buffers,
-`uint [[thread_position_in_grid]]`, and a single `out[tid] = in[tid] + 1.0f`
-assignment. Unsupported shapes get rustc-style spanned errors.
+Accepts `testdata/add_one.metal`-shaped kernels plus a `scale` variant:
+optional `#include` / `using namespace metal;`, one `kernel void` with `device`
+float buffers, `uint [[thread_position_in_grid]]`, and a single assignment
+`out[tid] = in[tid] + 1.0f` or `out[tid] = in[tid] * 2.0f`. Unsupported shapes
+get rustc-style spanned errors.
+
+Host Metal validation uses `objc2-metal` (no Swift subprocess).
+

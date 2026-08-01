@@ -549,7 +549,9 @@ fn emit_function(
                 walk(value, &mut note_f32);
                 walk(ptr, &mut note_f32);
             }
-            Inst::Fadd { lhs, rhs, .. } => {
+            Inst::Fadd { lhs, rhs, .. }
+            | Inst::Fsub { lhs, rhs, .. }
+            | Inst::Fmul { lhs, rhs, .. } => {
                 walk(lhs, &mut note_f32);
                 walk(rhs, &mut note_f32);
             }
@@ -635,6 +637,32 @@ fn emit_function(
                         rel(abs_val(lhs, &locals)),
                         rel(abs_val(rhs, &locals)),
                         bin_op::ADD,
+                        0,
+                    ],
+                );
+                locals.insert(dest.clone(), cur);
+                cur += 1;
+            }
+            Inst::Fsub { dest, lhs, rhs } => {
+                w.emit_record(
+                    func::INST_BINOP,
+                    &[
+                        rel(abs_val(lhs, &locals)),
+                        rel(abs_val(rhs, &locals)),
+                        bin_op::SUB,
+                        0,
+                    ],
+                );
+                locals.insert(dest.clone(), cur);
+                cur += 1;
+            }
+            Inst::Fmul { dest, lhs, rhs } => {
+                w.emit_record(
+                    func::INST_BINOP,
+                    &[
+                        rel(abs_val(lhs, &locals)),
+                        rel(abs_val(rhs, &locals)),
+                        bin_op::MUL,
                         0,
                     ],
                 );
