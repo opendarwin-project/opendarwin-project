@@ -8,3 +8,4 @@ zig-pkg/
 /ref
 /deps
 .pi/
+target/
