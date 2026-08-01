@@ -7,8 +7,7 @@ members = [
   "metalc/dialect-air",
   "metalc/metal-transforms",
   "metalc/metal-lower",
-  "metalc/air-bitcode",
-  "metalc/metallib",
+  "metalc/msl-frontend",
   "metalc/metalc",
   "metalc/metalc-host-test",
 ]
@@ -24,6 +23,7 @@ pliron = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df0
 pliron-derive = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
 pliron-llvm = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074", default-features = false, features = ["std"] }
 anyhow = "1"
+annotate-snippets = "0.12"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 sha2 = "0.11"
@@ -35,3 +35,4 @@ dialect-metal = { path = "metalc/dialect-metal" }
 dialect-air = { path = "metalc/dialect-air" }
 metal-transforms = { path = "metalc/metal-transforms" }
 metal-lower = { path = "metalc/metal-lower" }
+msl-frontend = { path = "metalc/msl-frontend" }
