@@ -1,0 +1,21 @@
+[package]
+name = "metalc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenMetal AIR compiler CLI"
+
+[[bin]]
+name = "metalc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+dialect-metal = { workspace = true }
+dialect-air = { workspace = true }
+metal-transforms = { workspace = true }
+metal-lower = { workspace = true }
+air-bitcode = { workspace = true }
+metallib = { workspace = true }
+pliron = { workspace = true }

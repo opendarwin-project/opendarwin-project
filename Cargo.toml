@@ -9,6 +9,8 @@ members = [
   "metalc/metal-lower",
   "metalc/air-bitcode",
   "metalc/metallib",
+  "metalc/metalc",
+  "metalc/metalc-host-test",
 ]
 
 [workspace.package]
