@@ -3,6 +3,12 @@ resolver = "3"
 members = [
   "metalc/metallib",
   "metalc/air-bitcode",
+  "metalc/dialect-metal",
+  "metalc/dialect-air",
+  "metalc/metal-transforms",
+  "metalc/metal-lower",
+  "metalc/air-bitcode",
+  "metalc/metallib",
 ]
 
 [workspace.package]
@@ -12,11 +18,18 @@ license = "Apache-2.0"
 repository = "https://github.com/opendarwin/src"
 
 [workspace.dependencies]
+pliron = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
+pliron-derive = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
+pliron-llvm = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074", default-features = false, features = ["std"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 sha2 = "0.11"
 rustc-hash = "2"
 
-metallib = { path = "crates/metallib" }
-air-bitcode = { path = "crates/air-bitcode" }
+metallib = { path = "metalc/metallib" }
+air-bitcode = { path = "metalc/air-bitcode" }
+dialect-metal = { path = "metalc/dialect-metal" }
+dialect-air = { path = "metalc/dialect-air" }
+metal-transforms = { path = "metalc/metal-transforms" }
+metal-lower = { path = "metalc/metal-lower" }
