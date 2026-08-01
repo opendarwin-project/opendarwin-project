@@ -1,0 +1,13 @@
+[package]
+name = "metal-lower"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lower dialect-metal to AirModule"
+
+[dependencies]
+pliron = { workspace = true }
+dialect-metal = { workspace = true }
+dialect-air = { workspace = true }
+air-bitcode = { workspace = true }
+thiserror = { workspace = true }
