@@ -1,0 +1,12 @@
+[package]
+name = "air-bitcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AIR module AST, LLVM IR emission, and metallib packaging"
+
+[dependencies]
+metallib = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+anyhow = { workspace = true }
