@@ -79,6 +79,52 @@ impl FAddOp {
 }
 
 #[pliron_op(
+    name = "metal.fsub",
+    format = "$0 `, ` $1 ` : ` type($0)",
+    interfaces = [NOpdsInterface<2>, OneResultInterface],
+    verifier = "succ",
+)]
+pub struct FSubOp;
+
+impl FSubOp {
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, ty: TypeHandle) -> Self {
+        FSubOp {
+            op: Operation::new(
+                ctx,
+                Self::get_concrete_op_info(),
+                vec![ty],
+                vec![lhs, rhs],
+                vec![],
+                0,
+            ),
+        }
+    }
+}
+
+#[pliron_op(
+    name = "metal.fmul",
+    format = "$0 `, ` $1 ` : ` type($0)",
+    interfaces = [NOpdsInterface<2>, OneResultInterface],
+    verifier = "succ",
+)]
+pub struct FMulOp;
+
+impl FMulOp {
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, ty: TypeHandle) -> Self {
+        FMulOp {
+            op: Operation::new(
+                ctx,
+                Self::get_concrete_op_info(),
+                vec![ty],
+                vec![lhs, rhs],
+                vec![],
+                0,
+            ),
+        }
+    }
+}
+
+#[pliron_op(
     name = "metal.load",
     format = "$0 ` : ` type($0)",
     interfaces = [OneOpdInterface, OneResultInterface],
@@ -188,6 +234,20 @@ impl ReturnOp {
 
 /// Build the MVP `add_one` kernel as a pliron [`ModuleOp`].
 pub fn build_add_one_module(ctx: &mut Context) -> Result<ModuleOp> {
+    build_binary_kernel(ctx, "add_one", BinKind::Add, 1.0)
+}
+
+/// Build a `scale` kernel: `out[tid] = in[tid] * 2.0`.
+pub fn build_scale_module(ctx: &mut Context) -> Result<ModuleOp> {
+    build_binary_kernel(ctx, "scale", BinKind::Mul, 2.0)
+}
+
+enum BinKind {
+    Add,
+    Mul,
+}
+
+fn build_binary_kernel(ctx: &mut Context, name: &str, kind: BinKind, imm: f32) -> Result<ModuleOp> {
     let i32_ty = IntegerType::get(ctx, 32, Signedness::Signless);
     let i64_ty = IntegerType::get(ctx, 64, Signedness::Signless);
     let ptr_ty = i64_ty;
@@ -197,8 +257,9 @@ pub fn build_add_one_module(ctx: &mut Context) -> Result<ModuleOp> {
         vec![ptr_ty.into(), ptr_ty.into(), i32_ty.into()],
         vec![],
     );
-    let module = ModuleOp::new(ctx, "add_one_mod".try_into().expect("id"));
-    let func = FuncOp::new(ctx, "add_one".try_into().expect("id"), func_ty);
+    let module_name = format!("{name}_mod");
+    let module = ModuleOp::new(ctx, module_name.as_str().try_into().expect("id"));
+    let func = FuncOp::new(ctx, name.try_into().expect("id"), func_ty);
     module.append_operation(ctx, func.get_operation(), 0);
 
     let entry = func.get_entry_block(ctx);
@@ -225,19 +286,28 @@ pub fn build_add_one_module(ctx: &mut Context) -> Result<ModuleOp> {
     ins.append_op(ctx, &loaded);
     let v = loaded.get_result(ctx);
 
-    let one = ConstantF32Op::new(ctx, 1.0);
-    ins.append_op(ctx, &one);
-    let one_v = one.get_result(ctx);
+    let imm_op = ConstantF32Op::new(ctx, imm);
+    ins.append_op(ctx, &imm_op);
+    let imm_v = imm_op.get_result(ctx);
 
-    let sum = FAddOp::new(ctx, v, one_v, i32_ty.into());
-    ins.append_op(ctx, &sum);
-    let sum_v = sum.get_result(ctx);
+    let result = match kind {
+        BinKind::Add => {
+            let sum = FAddOp::new(ctx, v, imm_v, i32_ty.into());
+            ins.append_op(ctx, &sum);
+            sum.get_result(ctx)
+        }
+        BinKind::Mul => {
+            let prod = FMulOp::new(ctx, v, imm_v, i32_ty.into());
+            ins.append_op(ctx, &prod);
+            prod.get_result(ctx)
+        }
+    };
 
     let out_gep = GepOp::new(ctx, out_ptr, tid64_v, ptr_ty.into());
     ins.append_op(ctx, &out_gep);
     let out_elem = out_gep.get_result(ctx);
 
-    let st = StoreOp::new(ctx, sum_v, out_elem);
+    let st = StoreOp::new(ctx, result, out_elem);
     ins.append_op(ctx, &st);
 
     let ret = ReturnOp::new(ctx);

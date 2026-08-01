@@ -125,6 +125,20 @@ pub fn write_llvm_ir(module: &AirModule) -> String {
                         val_str(rhs, f)
                     ));
                 }
+                Inst::Fsub { dest, lhs, rhs } => {
+                    out.push_str(&format!(
+                        "  %{dest} = fsub fast float {}, {}\n",
+                        val_str(lhs, f),
+                        val_str(rhs, f)
+                    ));
+                }
+                Inst::Fmul { dest, lhs, rhs } => {
+                    out.push_str(&format!(
+                        "  %{dest} = fmul fast float {}, {}\n",
+                        val_str(lhs, f),
+                        val_str(rhs, f)
+                    ));
+                }
                 Inst::RetVoid => out.push_str("  ret void\n"),
             }
         }
