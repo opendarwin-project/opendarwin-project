@@ -1,0 +1,11 @@
+[package]
+name = "msl-frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MSL subset frontend for metalc (annotate-snippets diagnostics)"
+
+[dependencies]
+annotate-snippets = { workspace = true }
+dialect-metal = { workspace = true }
+pliron = { workspace = true }

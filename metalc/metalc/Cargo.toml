@@ -16,6 +16,7 @@ dialect-metal = { workspace = true }
 dialect-air = { workspace = true }
 metal-transforms = { workspace = true }
 metal-lower = { workspace = true }
+msl-frontend = { workspace = true }
 air-bitcode = { workspace = true }
 metallib = { workspace = true }
 pliron = { workspace = true }
