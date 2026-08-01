@@ -85,4 +85,6 @@ pub enum Expr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
+    Sub,
+    Mul,
 }

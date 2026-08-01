@@ -7,27 +7,30 @@
 #[cfg(target_os = "macos")]
 mod macos_tests {
     use air_bitcode::{add_one_module, emit_metallib};
+    use dialect_metal::build_scale_module;
     use dispatch2::DispatchData;
-    use objc2_foundation::ns_string;
+    use metal_lower::lower_module;
+    use objc2_foundation::NSString;
     use objc2_metal::{
         MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
         MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
         MTLResourceOptions, MTLSize,
     };
+    use pliron::context::Context;
 
     // `MTLCreateSystemDefaultDevice` requires linking CoreGraphics.
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {}
 
-    fn run_add_one(metallib: &[u8]) {
+    fn run_binary_kernel(metallib: &[u8], name: &str, expected: impl Fn(usize) -> f32) {
         let device = MTLCreateSystemDefaultDevice().expect("no Metal device");
         let data = DispatchData::from_bytes(metallib);
         let library = device
             .newLibraryWithData_error(&data)
             .unwrap_or_else(|e| panic!("newLibraryWithData: {e}"));
         let function = library
-            .newFunctionWithName(ns_string!("add_one"))
-            .expect("missing add_one function");
+            .newFunctionWithName(&NSString::from_str(name))
+            .unwrap_or_else(|| panic!("missing {name} function"));
         let pso = device
             .newComputePipelineStateWithFunction_error(&function)
             .unwrap_or_else(|e| panic!("compute PSO: {e}"));
@@ -78,10 +81,10 @@ mod macos_tests {
             let out_ptr = out_buf.contents().cast::<f32>();
             let slice = std::slice::from_raw_parts(out_ptr.as_ptr(), n);
             for (i, &v) in slice.iter().enumerate() {
-                let expected = i as f32 + 1.0;
+                let want = expected(i);
                 assert!(
-                    (v - expected).abs() < 1e-5,
-                    "mismatch at {i}: got {v}, expected {expected}"
+                    (v - want).abs() < 1e-5,
+                    "mismatch at {i}: got {v}, expected {want}"
                 );
             }
         }
@@ -91,6 +94,16 @@ mod macos_tests {
     fn add_one_runs_on_host_metal() {
         let dir = std::env::temp_dir().join("metalc-host-objc2");
         let metallib = emit_metallib(&add_one_module(), &dir).expect("emit metallib");
-        run_add_one(&metallib);
+        run_binary_kernel(&metallib, "add_one", |i| i as f32 + 1.0);
+    }
+
+    #[test]
+    fn scale_runs_on_host_metal() {
+        let ctx = &mut Context::new();
+        let module = build_scale_module(ctx).expect("build");
+        let air = lower_module(ctx, module).expect("lower");
+        let dir = std::env::temp_dir().join("metalc-host-scale");
+        let metallib = emit_metallib(&air, &dir).expect("emit");
+        run_binary_kernel(&metallib, "scale", |i| i as f32 * 2.0);
     }
 }

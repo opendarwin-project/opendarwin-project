@@ -589,11 +589,14 @@ name = "metalc-host-test"
 version = "0.1.0"
 dependencies = [
  "air-bitcode",
+ "dialect-metal",
  "dispatch2",
+ "metal-lower",
  "metallib",
  "objc2",
  "objc2-foundation",
  "objc2-metal",
+ "pliron",
 ]
 
 [[package]]

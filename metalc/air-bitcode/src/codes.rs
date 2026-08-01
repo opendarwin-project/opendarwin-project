@@ -72,6 +72,8 @@ pub mod cast_op {
 
 pub mod bin_op {
     pub const ADD: u64 = 0; // also FAdd
+    pub const SUB: u64 = 1; // also FSub
+    pub const MUL: u64 = 2; // also FMul
 }
 
 pub mod linkage {

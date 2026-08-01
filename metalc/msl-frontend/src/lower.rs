@@ -1,8 +1,6 @@
 //! Lower a parsed MSL AST into a dialect-metal [`ModuleOp`].
 //!
-//! MVP: recognize the `add_one` kernel shape and emit the matching pliron module
-//! via [`dialect_metal::build_add_one_module`]. Unsupported shapes get spanned
-//! diagnostics.
+//! MVP: recognize `add_one` (`+ 1.0`) and `scale` (`* 2.0`) buffer kernels.
 
 use pliron::{builtin::ops::ModuleOp, context::Context};
 
@@ -29,36 +27,101 @@ pub fn lower_unit(
             filename,
         ));
     }
-    lower_add_one(ctx, &unit.kernels[0], source, filename)
+    lower_kernel(ctx, &unit.kernels[0], source, filename)
 }
 
-fn lower_add_one(
+fn lower_kernel(
     ctx: &mut Context,
     kernel: &Kernel,
     source: &str,
     filename: &str,
 ) -> Result<ModuleOp, Diagnostic> {
-    if kernel.name.node != "add_one" {
-        return Err(Diagnostic::new(
-            format!(
-                "unsupported kernel `{}` (MVP only lowers `add_one`)",
-                kernel.name.node
-            ),
-            kernel.name.span.clone(),
-            source,
-            filename,
-        ));
-    }
+    expect_buffer_pair(kernel, source, filename)?;
 
-    if kernel.params.len() != 3 {
+    if kernel.body.len() != 1 {
         return Err(Diagnostic::new(
-            "add_one expects three parameters: const float* in, float* out, uint tid",
+            "MVP kernels expect a single assignment statement",
             kernel.span.clone(),
             source,
             filename,
         ));
     }
 
+    let Stmt::AssignIndex {
+        base, index, value, ..
+    } = &kernel.body[0];
+    if base.node != "out" {
+        return Err(Diagnostic::new(
+            "expected store to `out[...]`",
+            base.span.clone(),
+            source,
+            filename,
+        ));
+    }
+    expect_ident(index, "tid", source, filename)?;
+
+    let (op, imm) = match value {
+        Expr::Binary {
+            op: BinOp::Add,
+            lhs,
+            rhs,
+            ..
+        } => {
+            expect_index(lhs, "in", "tid", source, filename)?;
+            expect_float(rhs, 1.0, source, filename)?;
+            (BinOp::Add, 1.0)
+        }
+        Expr::Binary {
+            op: BinOp::Mul,
+            lhs,
+            rhs,
+            ..
+        } => {
+            expect_index(lhs, "in", "tid", source, filename)?;
+            expect_float(rhs, 2.0, source, filename)?;
+            (BinOp::Mul, 2.0)
+        }
+        other => {
+            return Err(Diagnostic::new(
+                "expected `in[tid] + 1.0` or `in[tid] * 2.0`",
+                expr_span(other),
+                source,
+                filename,
+            ));
+        }
+    };
+
+    match (kernel.name.node.as_str(), op, imm) {
+        ("add_one", BinOp::Add, _) => dialect_metal::build_add_one_module(ctx),
+        ("scale", BinOp::Mul, _) => dialect_metal::build_scale_module(ctx),
+        (name, _, _) => {
+            return Err(Diagnostic::new(
+                format!("unsupported kernel `{name}` (MVP: add_one with +1.0, or scale with *2.0)"),
+                kernel.name.span.clone(),
+                source,
+                filename,
+            ));
+        }
+    }
+    .map_err(|e| {
+        Diagnostic::new(
+            format!("failed to build dialect-metal module: {e}"),
+            kernel.span.clone(),
+            source,
+            filename,
+        )
+    })
+}
+
+fn expect_buffer_pair(kernel: &Kernel, source: &str, filename: &str) -> Result<(), Diagnostic> {
+    if kernel.params.len() != 3 {
+        return Err(Diagnostic::new(
+            "expected three parameters: const float* in, float* out, uint tid",
+            kernel.span.clone(),
+            source,
+            filename,
+        ));
+    }
     match &kernel.params[0] {
         Param::Buffer {
             name,
@@ -76,7 +139,6 @@ fn lower_add_one(
             ));
         }
     }
-
     match &kernel.params[1] {
         Param::Buffer {
             name,
@@ -94,7 +156,6 @@ fn lower_add_one(
             ));
         }
     }
-
     match &kernel.params[2] {
         Param::ThreadPositionInGrid { name, .. } if name.node == "tid" => {}
         p => {
@@ -106,63 +167,7 @@ fn lower_add_one(
             ));
         }
     }
-
-    if kernel.body.len() != 1 {
-        return Err(Diagnostic::new(
-            "add_one expects a single assignment statement",
-            kernel.span.clone(),
-            source,
-            filename,
-        ));
-    }
-
-    match &kernel.body[0] {
-        Stmt::AssignIndex {
-            base,
-            index,
-            value,
-            span,
-        } => {
-            if base.node != "out" {
-                return Err(Diagnostic::new(
-                    "expected store to `out[...]`",
-                    base.span.clone(),
-                    source,
-                    filename,
-                ));
-            }
-            expect_ident(index, "tid", source, filename)?;
-            match value {
-                Expr::Binary {
-                    op: BinOp::Add,
-                    lhs,
-                    rhs,
-                    ..
-                } => {
-                    expect_index(lhs, "in", "tid", source, filename)?;
-                    expect_float_one(rhs, source, filename)?;
-                }
-                other => {
-                    return Err(Diagnostic::new(
-                        "expected `in[tid] + 1.0`",
-                        expr_span(other),
-                        source,
-                        filename,
-                    ));
-                }
-            }
-            let _ = span;
-        }
-    }
-
-    dialect_metal::build_add_one_module(ctx).map_err(|e| {
-        Diagnostic::new(
-            format!("failed to build dialect-metal module: {e}"),
-            kernel.span.clone(),
-            source,
-            filename,
-        )
-    })
+    Ok(())
 }
 
 fn param_span(p: &Param) -> std::ops::Range<usize> {
@@ -213,11 +218,11 @@ fn expect_index(
     }
 }
 
-fn expect_float_one(e: &Expr, source: &str, filename: &str) -> Result<(), Diagnostic> {
+fn expect_float(e: &Expr, want: f32, source: &str, filename: &str) -> Result<(), Diagnostic> {
     match e {
-        Expr::FloatLit { value, .. } if (*value - 1.0).abs() < f32::EPSILON => Ok(()),
+        Expr::FloatLit { value, .. } if (*value - want).abs() < f32::EPSILON => Ok(()),
         other => Err(Diagnostic::new(
-            "expected floating literal `1.0`",
+            format!("expected floating literal `{want:.1}`"),
             expr_span(other),
             source,
             filename,
