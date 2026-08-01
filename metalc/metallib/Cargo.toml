@@ -1,0 +1,10 @@
+[package]
+name = "metallib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MTLB metallib container reader/writer for Metal AIR bitcode"
+
+[dependencies]
+sha2 = { workspace = true }
+thiserror = { workspace = true }
