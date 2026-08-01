@@ -9,3 +9,24 @@ publish = false
 [dependencies]
 air-bitcode = { workspace = true }
 metallib = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { version = "0.3", default-features = false, features = ["alloc", "objc2", "block2"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-metal = { version = "0.3", default-features = false, features = [
+  "std",
+  "MTLBuffer",
+  "MTLCommandBuffer",
+  "MTLCommandEncoder",
+  "MTLCommandQueue",
+  "MTLComputeCommandEncoder",
+  "MTLComputePipeline",
+  "MTLDevice",
+  "MTLLibrary",
+  "MTLResource",
+  "MTLTypes",
+  "bitflags",
+  "block2",
+  "dispatch2",
+] }
