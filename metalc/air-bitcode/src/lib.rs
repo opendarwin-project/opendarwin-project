@@ -1,15 +1,17 @@
 //! AIR module model, textual LLVM IR emission, and metallib packaging.
 //!
-//! Bitcode assembly for the MVP uses the host `metal-as` tool to produce the
-//! typed-pointer AIR bitcode Apple's loader expects. The MTLB container is
-//! always written by the pure-Rust [`metallib`] crate. A pure-Rust bitstream
-//! writer can replace `metal-as` later without changing the [`AirModule`] API.
+//! Typed-pointer AIR bitcode is emitted by a pure-Rust bitstream writer
+//! ([`emit_bitcode`]). The MTLB container is written by [`metallib`].
 
 mod assemble;
+mod bitstream;
+mod codes;
+mod emit;
 mod module;
 mod write_ll;
 
-pub use assemble::{AssembleError, assemble_bitcode, emit_metallib};
+pub use assemble::{AssembleError, emit_metallib};
+pub use emit::emit_bitcode;
 pub use module::*;
 pub use write_ll::write_llvm_ir;
 

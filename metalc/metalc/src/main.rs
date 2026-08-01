@@ -22,7 +22,7 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Emit a .metallib for add_one (host metal-as + Rust MTLB packer).
+    /// Emit a .metallib for add_one (pure-Rust AIR bitcode + MTLB packer).
     EmitMetallib {
         #[arg(short, long)]
         output: PathBuf,
