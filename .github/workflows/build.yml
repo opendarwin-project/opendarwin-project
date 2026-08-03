@@ -6,29 +6,36 @@ on:
         branches:
             - main
 
+env:
+    CARGO_TERM_COLOR: always
+
 jobs:
     test:
-        runs-on: ubuntu-latest
+        runs-on: macos-latest
         steps:
             - name: Checkout
               uses: actions/checkout@v6
 
             - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@nightly
               with:
                   components: rustfmt, clippy
 
+            - name: Install Nushell via Cargo Binstall
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: nu, cargo-nextest
+
             - name: Cache cargo
               uses: Swatinem/rust-cache@v2
-              with:
-                  workspaces: rust/metalc -> target
 
-            - name: Check
-              run: cargo check --workspace
+            - name: Lint
+              run: cargo xtask clippy
 
-            - name: Test
-              # Host Metal integration tests are cfg(target_os = "macos") only.
-              run: cargo test --workspace
+            - name: Run Tests
+              run: cargo xtask test
 
-            - name: Clippy
-              run: cargo clippy --workspace --all-targets
+            - name: Run framework tests
+              run: |
+                  cargo xtask framework
+                  cc -isysroot $(xcrun --show-sdk-path) -arch arm64 tools/iokit_smoke.c -o /tmp/smoke -framework IOKit && DYLD_FRAMEWORK_PATH=$PWD/target/frameworks /tmp/iokit_smoke

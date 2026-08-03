@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "src/iokit",
   "metalc/metallib",
   "metalc/air-bitcode",
   "metalc/dialect-metal",
@@ -36,3 +37,17 @@ dialect-air = { path = "metalc/dialect-air" }
 metal-transforms = { path = "metalc/metal-transforms" }
 metal-lower = { path = "metalc/metal-lower" }
 msl-frontend = { path = "metalc/msl-frontend" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "thin"
+
+[profile.dev]
+panic = "abort"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"
