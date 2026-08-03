@@ -1,0 +1,11 @@
+[unstable]
+panic-abort-tests = true 
+
+[alias]
+xtask = "run --manifest-path xtask/Cargo.toml --"
+
+[target.aarch64-apple-darwin]
+rustflags = ["-Zthreads=0",  "-Zshare-generics=y", "-Zpolonius=next", "-Znext-solver=globally"]
+
+[target.arm64e-apple-darwin]
+rustflags = ["-Zthreads=0",  "-Zshare-generics=y", "-Zpolonius=next", "-Znext-solver=globally"]
