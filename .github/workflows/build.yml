@@ -8,6 +8,9 @@ on:
 
 env:
     CARGO_TERM_COLOR: always
+    # GitHub-hosted macOS runners are currently on macOS 26 / AIR 2.8.
+    METALC_MACOS_MAJOR: "26"
+    METALC_AIR_VERSION: "2.8"
 
 jobs:
     test:
