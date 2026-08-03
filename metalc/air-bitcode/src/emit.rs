@@ -147,7 +147,8 @@ pub fn emit_bitcode(module: &AirModule) -> Vec<u8> {
         7,
         8,
         16,
-        27,
+        module.macos_version.0 as i32,
+        module.macos_version.1 as i32,
         31,
         128,
         module.air_version.0 as i32,
@@ -386,8 +387,8 @@ fn emit_metadata_block(
     nodes.push(vec![
         Op::I32(2),
         Op::S("SDK Version".into()),
-        Op::I32(27),
-        Op::I32(0),
+        Op::I32(module.macos_version.0 as i32),
+        Op::I32(module.macos_version.1 as i32),
     ]);
     push_flag(&mut nodes, 1, "wchar_size", 4);
     push_flag(&mut nodes, 7, "frame-pointer", 2);
@@ -528,7 +529,7 @@ fn emit_function(
 
     let mut f32s: Vec<f32> = Vec::new();
     let mut note_f32 = |v: f32| {
-        if !f32s.iter().any(|x| *x == v) {
+        if !f32s.contains(&v) {
             f32s.push(v);
         }
     };

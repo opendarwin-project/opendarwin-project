@@ -161,7 +161,10 @@ pub fn write_llvm_ir(module: &AirModule) -> String {
     out.push_str("!air.language_version = !{!20}\n");
     out.push_str("!air.source_file_name = !{!21}\n\n");
 
-    out.push_str("!0 = !{i32 2, !\"SDK Version\", [2 x i32] [i32 27, i32 0]}\n");
+    out.push_str(&format!(
+        "!0 = !{{i32 2, !\"SDK Version\", [2 x i32] [i32 {}, i32 {}]}}\n",
+        module.macos_version.0, module.macos_version.1
+    ));
     out.push_str("!1 = !{i32 1, !\"wchar_size\", i32 4}\n");
     out.push_str("!2 = !{i32 7, !\"frame-pointer\", i32 2}\n");
     out.push_str("!3 = !{i32 7, !\"air.max_device_buffers\", i32 31}\n");
@@ -235,10 +238,15 @@ mod tests {
 
     #[test]
     fn add_one_ll_contains_kernel_metadata() {
-        let ll = write_llvm_ir(&add_one_module());
+        let module = add_one_module();
+        let ll = write_llvm_ir(&module);
         assert!(ll.contains("define void @add_one("));
         assert!(ll.contains("!air.kernel"));
         assert!(ll.contains("air.thread_position_in_grid"));
-        assert!(ll.contains("target triple = \"air64_v29-apple-macosx27.0.0\""));
+        assert!(ll.contains(&format!("target triple = \"{}\"", module.triple)));
+        assert!(ll.contains(&format!(
+            "!\"SDK Version\", [2 x i32] [i32 {}, i32 {}]",
+            module.macos_version.0, module.macos_version.1
+        )));
     }
 }

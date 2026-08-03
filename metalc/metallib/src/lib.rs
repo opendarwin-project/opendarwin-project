@@ -35,6 +35,7 @@ pub struct MetallibOptions {
 impl Default for MetallibOptions {
     fn default() -> Self {
         // Match current Xcode Metal 4.1 / AIR 2.9 goldens on macOS 27 tooling.
+        // Emitters targeting older hosts should override `os_*` / `air_*`.
         Self {
             platform: PLATFORM_MACOS,
             os_major: 27,
