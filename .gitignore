@@ -9,3 +9,4 @@ zig-pkg/
 /deps
 .pi/
 target/
+/tools/iokit_smoke

@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Build/test/lint driver for the OpenDarwin workspace"
+
+# Standalone crate on purpose: it is NOT a workspace member, so `--workspace`
+# in the commands it spawns only covers the real library crates (iokit, metalc).
+[workspace]
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
