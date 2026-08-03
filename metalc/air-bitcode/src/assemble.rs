@@ -31,6 +31,9 @@ pub fn emit_metallib(module: &AirModule, _work_dir: &Path) -> Result<Vec<u8>, As
         return Err(AssembleError::Emit("missing BC magic".into()));
     }
     let opts = MetallibOptions {
+        os_major: module.macos_version.0 as u16,
+        os_minor: module.macos_version.1 as u16,
+        os_patch: module.macos_version.2 as u16,
         air_major: module.air_version.0 as u16,
         air_minor: module.air_version.1 as u16,
         metal_major: module.language_version.1 as u16,

@@ -23,17 +23,21 @@ cargo test --workspace
 
 Host compute proof: `cargo test -p metalc-host-test` (macOS).
 
+AIR / macOS target versions default to the host (`sw_vers`) or the Xcode 27 /
+AIR 2.9 golden. Override with `METALC_MACOS_MAJOR` and `METALC_AIR_VERSION`
+(e.g. `26` / `2.8` on GitHub Actions).
+
 ## Layout
 
-| Crate | Role |
-|-------|------|
-| `metallib` | MTLB container R/W |
-| `air-bitcode` | `AirModule`, LLVM IR dump, **typed-pointer bitcode writer** |
-| `msl-frontend` | MSL subset parser + `annotate-snippets` diagnostics |
-| `dialect-metal` / `dialect-air` | pliron dialects |
-| `metal-lower` / `metal-transforms` | Lowering / passes |
-| `metalc` | CLI |
-| `metalc-host-test` | Host Metal smoke test |
+| Crate                              | Role                                                        |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `metallib`                         | MTLB container R/W                                          |
+| `air-bitcode`                      | `AirModule`, LLVM IR dump, **typed-pointer bitcode writer** |
+| `msl-frontend`                     | MSL subset parser + `annotate-snippets` diagnostics         |
+| `dialect-metal` / `dialect-air`    | pliron dialects                                             |
+| `metal-lower` / `metal-transforms` | Lowering / passes                                           |
+| `metalc`                           | CLI                                                         |
+| `metalc-host-test`                 | Host Metal smoke test                                       |
 
 Workspace root is the repo root (`Cargo.toml`). Goldens live in `/testdata`.
 
@@ -46,4 +50,3 @@ float buffers, `uint [[thread_position_in_grid]]`, and a single assignment
 get rustc-style spanned errors.
 
 Host Metal validation uses `objc2-metal` (no Swift subprocess).
-

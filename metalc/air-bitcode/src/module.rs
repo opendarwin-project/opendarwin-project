@@ -1,5 +1,7 @@
 //! Structured AIR module (subset sufficient for MVP compute kernels).
 
+use crate::target::{AIR_DATALAYOUT, AirTarget};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AirType {
     Void,
@@ -113,6 +115,8 @@ pub struct AirModule {
     pub triple: String,
     pub datalayout: String,
     pub source_filename: String,
+    /// macOS version embedded in SDK Version metadata and the MTLB header.
+    pub macos_version: (u32, u32, u32),
     pub air_version: (u32, u32, u32),
     pub language_version: (String, u32, u32, u32),
     pub functions: Vec<AirFunction>,
@@ -120,11 +124,26 @@ pub struct AirModule {
 
 impl AirModule {
     pub fn new(triple: impl Into<String>, datalayout: impl Into<String>) -> Self {
+        let target = AirTarget::resolve();
         Self {
             triple: triple.into(),
             datalayout: datalayout.into(),
             source_filename: "metalc.metal".into(),
-            air_version: (2, 9, 0),
+            macos_version: target.macos_version(),
+            air_version: target.air_version(),
+            language_version: ("Metal".into(), 4, 1, 0),
+            functions: Vec::new(),
+        }
+    }
+
+    /// Build an empty module for the resolved (or given) [`AirTarget`].
+    pub fn for_target(target: AirTarget) -> Self {
+        Self {
+            triple: target.triple(),
+            datalayout: AIR_DATALAYOUT.into(),
+            source_filename: "metalc.metal".into(),
+            macos_version: target.macos_version(),
+            air_version: target.air_version(),
             language_version: ("Metal".into(), 4, 1, 0),
             functions: Vec::new(),
         }
