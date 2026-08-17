@@ -1,0 +1,23 @@
+[package]
+name = "kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
+[dependencies]
+aarch64-cpu = { workspace = true }
+aarch64-paging = { workspace = true }
+arm-gic = { workspace = true }
+lz4rip = { workspace = true }
+safe-mmio = { workspace = true }
+spin = { workspace = true }
+virtio-drivers = { workspace = true }
+object = { workspace = true }
