@@ -77,8 +77,6 @@ mod framebuffer;
 mod mach;
 mod matching;
 mod service;
-mod traps;
-
 // Re-export the C-facing types so `use iokit::*` mirrors IOKitLib.h.
 pub use types::{
     IOFramebufferInfo, IOReturn, KERN_SUCCESS, MACH_PORT_NULL, io_connect_t, io_object_t,

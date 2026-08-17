@@ -9,7 +9,6 @@
 use core::mem::size_of;
 use core::ptr;
 
-use crate::traps;
 use crate::types::*;
 
 const MAX_TRAILER_SIZE: usize = 0x60;
@@ -57,29 +56,15 @@ impl Default for ReplyBody {
 
 /// `mach_host_self` — the master IOKit port is the host port on OpenDarwin.
 pub(crate) fn mach_host_self() -> mach_port_t {
-    unsafe { traps::trap0(MACH_host_self_trap) as u32 }
+    unsafe { crate::libc::mach_host_self() }
 }
 
 /// `mach_reply_port` — allocate a fresh receive right for RPC replies.
 pub(crate) fn mach_reply_port() -> mach_port_t {
-    unsafe { traps::trap0(MACH_mach_reply_port) as u32 }
+    unsafe { crate::libc::mach_reply_port() }
 }
 
 /// Raw `mach_msg2_trap` (trap 47) with the packed-argument ABI.
-///
-/// The legacy `mach_msg_trap` (31) kills the process on macOS 26, so this
-/// crate speaks the modern trap exactly like libsystem_kernel's
-/// `mach_msg2_internal` (verified against a live disassembly of
-/// libsystem_kernel and `osfmk/ipc/mach_msg.c`):
-///
-/// - x0 = message/receive buffer
-/// - x1 = 64-bit option bits (`MACH64_*`)
-/// - x2 = (msgh_bits << 32) | send_size
-/// - x3 = (msgh_local_port << 32) | msgh_remote_port
-/// - x4 = (msgh_id << 32) | msgh_voucher_port
-/// - x5 = (rcv_name << 32) | desc_count
-/// - x6 = (rcv_size << 32) | priority
-/// - x7 = timeout
 fn mach_msg2(
     msg: *mut u8,
     option: u64,
@@ -94,17 +79,16 @@ fn mach_msg2(
     timeout: u32,
 ) -> u32 {
     unsafe {
-        traps::trap8(
-            MACH_mach_msg2_trap,
-            msg as usize,
-            option as usize,
-            (((send_size as u64) << 32) | (bits as u64)) as usize,
-            (((local as u64) << 32) | (remote as u64)) as usize,
-            (((id as u64) << 32) | (voucher as u64)) as usize,
-            ((rcv_name as u64) << 32) as usize, // desc_count = 0
-            (rcv_size as u64) as usize,         // priority = 0
-            timeout as usize,
-        ) as u32
+        crate::libc::mach_msg2_trap(
+            msg,
+            option,
+            ((send_size as u64) << 32) | (bits as u64),
+            ((local as u64) << 32) | (remote as u64),
+            ((id as u64) << 32) | (voucher as u64),
+            (rcv_name as u64) << 32, // desc_count = 0
+            (rcv_size as u64) << 32, // priority = 0
+            timeout,
+        )
     }
 }
 
