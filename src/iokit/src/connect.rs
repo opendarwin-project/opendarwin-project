@@ -4,7 +4,6 @@
 use core::ffi::c_void;
 
 use crate::mach::{as_bytes, rpc};
-use crate::traps;
 use crate::types::*;
 
 /// Wire body for `MSG_CONNECT_MAP_MEMORY`.
@@ -61,19 +60,7 @@ pub extern "C" fn IOConnectTrap6(
     p5: usize,
     p6: usize,
 ) -> kern_return_t {
-    unsafe {
-        traps::trap8(
-            MACH_iokit_user_client_trap,
-            connect as usize,
-            index as usize,
-            p1,
-            p2,
-            p3,
-            p4,
-            p5,
-            p6,
-        ) as i32
-    }
+    unsafe { crate::libc::iokit_user_client_trap(connect, index, p1, p2, p3, p4, p5, p6) }
 }
 
 /// `IOConnectTrap0` — user client method with no scalar arguments.

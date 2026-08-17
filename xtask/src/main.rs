@@ -109,9 +109,9 @@ fn cmd_check(extra: &[String]) -> ! {
 
 fn cmd_framework(_extra: &[String]) -> ! {
     let root = repo_root();
-    let script = root.join("tools/build_frameworks.nu");
-    println!("==> nu {}", script.display());
-    let status = Command::new("nu")
+    let script = root.join("tools/build_frameworks.sh");
+    println!("==> brush {}", script.display());
+    let status = Command::new("brush")
         .current_dir(&root)
         .arg(&script)
         .status()

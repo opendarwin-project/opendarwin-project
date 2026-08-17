@@ -1,0 +1,20 @@
+[package]
+name = "libsystem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenDarwin minimal libSystem/libsystem_c userspace replacement"
+
+[dependencies]
+spin.workspace = true
+
+[features]
+default = []
+
+[lib]
+name = "System"
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

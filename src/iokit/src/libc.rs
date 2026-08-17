@@ -12,12 +12,34 @@ use core::ffi::c_void;
 // libSystem heap functions, resolved via dyld at load.
 #[link(name = "System")]
 unsafe extern "C" {
-    fn malloc(size: usize) -> *mut c_void;
-    fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
-    fn free(ptr: *mut c_void);
+    pub fn malloc(size: usize) -> *mut c_void;
+    pub fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
+    pub fn free(ptr: *mut c_void);
     /// Unwinds the whole process, aborting without flushing.
     #[allow(dead_code)] // only reached via the panic handler, cfg'd out for tests
     pub fn abort() -> !;
+    pub fn mach_host_self() -> u32;
+    pub fn mach_reply_port() -> u32;
+    pub fn mach_msg2_trap(
+        msg: *mut u8,
+        option: u64,
+        send_size_and_bits: u64,
+        ports: u64,
+        id_and_voucher: u64,
+        desc_and_rcv_name: u64,
+        priority_and_rcv_size: u64,
+        timeout: u32,
+    ) -> u32;
+    pub fn iokit_user_client_trap(
+        connect: u32,
+        index: u32,
+        p1: usize,
+        p2: usize,
+        p3: usize,
+        p4: usize,
+        p5: usize,
+        p6: usize,
+    ) -> i32;
 }
 
 /// Global allocator that redirects `Box`/`alloc` to libSystem's heap.
