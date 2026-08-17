@@ -159,3 +159,15 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 extern "C" fn rust_eh_personality() {}
+
+// `-Cpanic=abort` still leaves a handful of unwind-path references baked
+// into precompiled `liballoc` (e.g. alloc-error handling code that's
+// unreachable in practice but not eliminated at the IR level before
+// linking). We never actually unwind, so this only needs to exist to
+// satisfy the linker - abort like the panic handler above if it's ever
+// somehow reached.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+extern "C" fn _Unwind_Resume() -> ! {
+    unsafe { basics::abort() }
+}

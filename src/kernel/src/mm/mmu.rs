@@ -182,8 +182,7 @@ unsafe extern "C" {
 
 static KERNEL_ROOT: Mutex<Table> = Mutex::new(Table::zeroed());
 
-const MAX_EXTRA_KERNEL_REGIONS: usize = 16;
-
+const MAX_EXTRA_KERNEL_REGIONS: usize = 64;
 struct ExtraKernelRegions {
     regions: [Region; MAX_EXTRA_KERNEL_REGIONS],
     count: usize,
@@ -397,7 +396,30 @@ pub fn enable(regions: &[Region]) {
 
 pub fn enable_for_this_core() {
     let mair: u64 = (0xff << (ATTR_NORMAL_IDX * 8)) | (0x00 << (ATTR_DEVICE_IDX * 8));
-    let tcr: u64 = (1 << 23) | (25 << 0) | (3 << 8) | (1 << 10) | (1 << 12) | (0 << 14) | (1 << 7);
+    // TCR_EL1 field layout (ARM ARM): T0SZ[5:0] EPD0[7] IRGN0[9:8]
+    // ORGN0[11:10] SH0[13:12] TG0[15:14] T1SZ[21:16] A1[22] EPD1[23]
+    // IPS[34:32] TBI0[37]. T0SZ=16 -> 48-bit VA, 4-level (L0..L3) walk on
+    // TTBR0, matching level_index()'s L0 shift of 39 below; EPD0 MUST stay
+    // clear (TTBR0 is the only root in use - setting it disables TTBR0
+    // walks and faults on the very first access after MMU-enable).
+    // EPD1=1 disables TTBR1 entirely (unused, see module doc comment).
+    // IPS=0b101 (48-bit) is required to cover QEMU virt's high PCI ECAM
+    // (e.g. 0x4010000000); the reset default IPS=0 is 32-bit-only and
+    // address-size-faults there. TBI0 matches Darwin/XNU: ignore VA[63:56]
+    // on TTBR0 walks, since aarch64-macos userspace parks PAC/tag bits in
+    // the top byte.
+    let t0sz: u64 = 16;
+    let epd1: u64 = 1 << 23;
+    let ips_48: u64 = 0b101 << 32;
+    let tbi0: u64 = 1 << 37;
+    let tcr: u64 = t0sz
+        | (0b01 << 8) // IRGN0 = WBWA
+        | (0b01 << 10) // ORGN0 = WBWA
+        | (0b11 << 12) // SH0 = inner shareable
+        | (0b00 << 14) // TG0 = 4KB
+        | epd1
+        | ips_48
+        | tbi0;
     let ttbr0 = {
         let root = KERNEL_ROOT.lock();
         &*root as *const Table as u64
@@ -430,25 +452,106 @@ pub fn enable_for_this_core() {
     }
 }
 
+/// Splits [pa, pa+len) into the sub-ranges NOT already covered by
+/// KERNEL_REGIONS, writing them into `out` and returning the count.
+/// KERNEL_REGIONS entries are mutually disjoint, so each successive region
+/// can split a fragment into at most two pieces - `MAX_CLIP_FRAGMENTS`
+/// covers the worst case of every region clipping the same fragment once.
+const MAX_CLIP_FRAGMENTS: usize = KERNEL_REGIONS.len() + 1;
+
+fn clip_against_kernel_regions(
+    pa: u64,
+    len: u64,
+    out: &mut [(u64, u64); MAX_CLIP_FRAGMENTS],
+) -> usize {
+    let mut frags = *out;
+    frags[0] = (pa, pa + len);
+    let mut count = 1;
+    for r in &KERNEL_REGIONS {
+        let r_start = r.pa;
+        let r_end = r.pa + r.len;
+        let mut new_frags = [(0u64, 0u64); MAX_CLIP_FRAGMENTS];
+        let mut new_count = 0;
+        for &(s, e) in &frags[..count] {
+            if e <= r_start || s >= r_end {
+                new_frags[new_count] = (s, e);
+                new_count += 1;
+                continue;
+            }
+            if s < r_start {
+                new_frags[new_count] = (s, r_start);
+                new_count += 1;
+            }
+            if e > r_end {
+                new_frags[new_count] = (r_end, e);
+                new_count += 1;
+            }
+        }
+        frags = new_frags;
+        count = new_count;
+    }
+    *out = frags;
+    count
+}
+
+/// Maps [pa, pa+len) as extra kernel memory, clipping out any sub-range
+/// already covered by KERNEL_REGIONS first: KERNEL_REGIONS entries are set
+/// up once (with their own correct protections) before the MMU is even
+/// enabled, and blindly re-mapping over them here - e.g. the DTB window
+/// overlapping the start of the kernel's own .text - would silently
+/// downgrade live, in-use page-table entries (observed: stripped the
+/// execute bit off part of .text, causing a permission fault on the very
+/// next fetch from that range).
 pub fn map_extra(pa: u64, len: u64, prot: Prot) {
+    // Callers pass raw hardware register bases straight from a DTB "reg"
+    // property - e.g. QEMU virt's virtio-mmio slots are only 0x200 apart,
+    // far below PAGE_SIZE granularity. Round out to whole pages up front
+    // so map_range's alignment invariants hold; mapping a whole page for a
+    // sub-page device region is harmless (same page, re-mapped identically
+    // if another device in it triggers its own map_extra call later).
+    let aligned_pa = pa & !(PAGE_SIZE - 1);
+    let aligned_end = (pa + len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let pa = aligned_pa;
+    let len = aligned_end - aligned_pa;
+    let mut frags = [(0u64, 0u64); MAX_CLIP_FRAGMENTS];
+    let n = clip_against_kernel_regions(pa, len, &mut frags);
+
     {
         let mut root = KERNEL_ROOT.lock();
-        map_range(&mut root, pa, pa, len, prot);
+        for &(s, e) in &frags[..n] {
+            map_range(&mut root, s, s, e - s, prot);
+        }
     }
     {
         let mut extra = EXTRA_KERNEL_REGIONS.lock();
-        if extra.count < MAX_EXTRA_KERNEL_REGIONS {
+        for &(s, e) in &frags[..n] {
+            let mut covered = false;
+            for i in 0..extra.count {
+                let r = &extra.regions[i];
+                if r.prot == prot && s >= r.pa && e <= r.pa + r.len {
+                    covered = true;
+                    break;
+                }
+            }
+            if covered {
+                continue;
+            }
+            if extra.count >= MAX_EXTRA_KERNEL_REGIONS {
+                panic!("mmu: out of extra kernel regions");
+            }
             let idx = extra.count;
             extra.regions[idx] = Region {
-                pa,
-                len,
+                pa: s,
+                len: e - s,
                 prot,
                 _pad: 0,
             };
             extra.count += 1;
         }
     }
-    inherit_extra_in_task_tables(pa, len, prot);
+    for &(s, e) in &frags[..n] {
+        inherit_extra_in_task_tables(s, e - s, prot);
+    }
 }
 
 pub fn inherit_extra_in_task_tables(pa: u64, len: u64, prot: Prot) {
@@ -477,7 +580,6 @@ pub fn new_task_table(user_regions: &[Region]) -> &'static mut Table {
     for r in user_regions {
         map_range(t, r.pa, r.pa, r.len, r.prot);
     }
-
     {
         let mut live = LIVE_TASK_TABLES.lock();
         if live.count < MAX_LIVE_TASK_TABLES {

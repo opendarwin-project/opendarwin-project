@@ -110,10 +110,22 @@ fn read_be_u64(bytes: &[u8]) -> u64 {
 }
 
 pub fn discover() -> Option<Found> {
-    let dtb_addr = dtb_phys_addr.load(Ordering::Acquire);
-    if dtb_addr == 0 {
-        return None;
-    }
+    // QEMU doesn't hand a DTB pointer via x0 for an ELF passed to -kernel
+    // (that only happens for the raw Linux "Image" boot protocol) and, as
+    // of QEMU 11.x, doesn't auto-generate/place one in RAM for ELF boot
+    // either - confirmed empirically (physical-memory scan of the whole
+    // guest RAM found no FDT magic anywhere). tools/run_qemu.sh instead
+    // loads one explicitly via `-device loader` right past the kernel's
+    // own 6MB reservation (KERNEL_REGIONS[0]) - safe since discovery here
+    // completes and the DTB's content is no longer needed before PMM
+    // later claims that same free memory. Fall back to that address
+    // whenever start.S didn't actually receive a pointer in x0 (real
+    // hardware / a future raw-Image boot path would set it).
+    let qemu_elf_boot_dtb_addr = mmu::KERNEL_LOAD_ADDR + mmu::KERNEL_IMAGE_MAX_LEN;
+    let dtb_addr = match dtb_phys_addr.load(Ordering::Acquire) {
+        0 => qemu_elf_boot_dtb_addr,
+        addr => addr,
+    };
 
     mmu::map_extra(
         dtb_addr,

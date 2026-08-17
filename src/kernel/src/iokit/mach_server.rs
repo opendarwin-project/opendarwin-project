@@ -176,7 +176,7 @@ fn enqueue_reply(reply_port: *mut IpcPort, req_id: u32, body: ReplyBody, body_le
 
 pub fn handle_send(
     dest_port: *mut IpcPort,
-    msg_addr: u64,
+    msg_addr: usize,
     _send_size: u32,
     header: MachMsgHeader,
 ) -> bool {
@@ -205,9 +205,9 @@ pub fn handle_send(
         MSG_GET_MATCHING_SERVICE => {
             if po.tag != PortObjectTag::Master {
                 reply.ret = KERN_INVALID_ARGUMENT;
-            } else if let Some(body) = usercopy::copy_in::<MatchingBody>(
-                msg_addr + core::mem::size_of::<MachMsgHeader>() as u64,
-            ) {
+            } else if let Some(body) =
+                usercopy::copy_in::<MatchingBody>(msg_addr + core::mem::size_of::<MachMsgHeader>())
+            {
                 let len = (body.class_len as usize).min(CLASS_NAME_MAX);
                 let name = core::str::from_utf8(&body.class_name[..len]).unwrap_or("");
                 if let Some(svc) = find_matching_service(name) {

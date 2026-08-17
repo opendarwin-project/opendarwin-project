@@ -49,8 +49,13 @@ pub extern "C" fn IOConnectMapMemory(
 }
 
 /// `IOConnectTrap6` — raw `iokit_user_client_trap` (mach trap 100).
-#[unsafe(no_mangle)]
-pub extern "C" fn IOConnectTrap6(
+///
+/// Internal to this crate only (unlike `IOConnectCallMethod`/
+/// `IOConnectMapMemory` below, this isn't part of IOKit.framework's public
+/// C ABI on real Darwin either) - no `#[no_mangle]`, so it can't collide
+/// with `libsystem::mach::IOConnectTrap6` when both crates are statically
+/// linked into one flat-namespace binary (see src/userland/hello).
+pub(crate) extern "C" fn IOConnectTrap6(
     connect: io_connect_t,
     index: u32,
     p1: usize,
@@ -64,14 +69,12 @@ pub extern "C" fn IOConnectTrap6(
 }
 
 /// `IOConnectTrap0` — user client method with no scalar arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn IOConnectTrap0(connect: io_connect_t, index: u32) -> kern_return_t {
+pub(crate) extern "C" fn IOConnectTrap0(connect: io_connect_t, index: u32) -> kern_return_t {
     IOConnectTrap6(connect, index, 0, 0, 0, 0, 0, 0)
 }
 
 /// `IOConnectTrap1` — user client method with one scalar argument.
-#[unsafe(no_mangle)]
-pub extern "C" fn IOConnectTrap1(connect: io_connect_t, index: u32, p1: usize) -> kern_return_t {
+pub(crate) extern "C" fn IOConnectTrap1(connect: io_connect_t, index: u32, p1: usize) -> kern_return_t {
     IOConnectTrap6(connect, index, p1, 0, 0, 0, 0, 0)
 }
 

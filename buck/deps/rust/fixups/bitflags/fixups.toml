@@ -1,0 +1,4 @@
+# See fixups/memchr/fixups.toml: scope the no_std override to the
+# freestanding kernel platform only.
+["cfg(target_os = \"none\")"]
+omit_features = ["std"]

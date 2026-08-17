@@ -56,13 +56,14 @@ mod connect;
 mod libc;
 pub mod types;
 
-// The cdylib is a final artifact: give it a heap (via libSystem malloc) and a
+// The cdylib is a final artifact: give it a heap (via libSystem malloc) and,
+// when built `standalone` (the default - see Cargo.toml), a
 // `#[panic_handler]` (abort). Under `cfg(test)` the test harness links std,
 // which supplies both, so these are only compiled for the non-test build.
 #[global_allocator]
 static GLOBAL_ALLOC: libc::System = libc::System;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "standalone"))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { libc::abort() }
@@ -70,15 +71,17 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 // Even with panic = "abort", a cdylib can emit a reference to the DWARF
 // unwind personality routine. std normally provides it; in no_std we stub it.
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "standalone"))]
 #[unsafe(no_mangle)]
 extern "C" fn rust_eh_personality() {}
+
 mod framebuffer;
 mod mach;
 mod matching;
-mod service;
+pub mod service;
 // Re-export the C-facing types so `use iokit::*` mirrors IOKitLib.h.
 pub use types::{
     IOFramebufferInfo, IOReturn, KERN_SUCCESS, MACH_PORT_NULL, io_connect_t, io_object_t,
     io_service_t, kern_return_t, mach_port_t,
 };
+pub use service::IOMasterPort;

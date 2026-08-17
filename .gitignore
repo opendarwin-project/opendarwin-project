@@ -11,3 +11,4 @@ zig-pkg/
 target/
 /tools/iokit_smoke
 /buck-out
+rust-project.json
