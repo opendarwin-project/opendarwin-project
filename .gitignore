@@ -10,3 +10,4 @@ zig-pkg/
 .pi/
 target/
 /tools/iokit_smoke
+/buck-out

@@ -1,6 +1,0 @@
-.{
-    .lints = .{
-        .dead_file = .{ .severity = .off },
-        .line_width = .{ .severity = .off },
-    },
-}
