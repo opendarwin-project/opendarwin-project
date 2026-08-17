@@ -1,24 +1,25 @@
 [workspace]
 resolver = "3"
 members = [
+  "src/kernel",
   "src/libsystem",
   "src/iokit",
-  "metalc/metallib",
-  "metalc/air-bitcode",
-  "metalc/dialect-metal",
-  "metalc/dialect-air",
-  "metalc/metal-transforms",
-  "metalc/metal-lower",
-  "metalc/msl-frontend",
-  "metalc/metalc",
-  "metalc/metalc-host-test",
+  "src/metalc/metallib",
+  "src/metalc/air-bitcode",
+  "src/metalc/dialect-metal",
+  "src/metalc/dialect-air",
+  "src/metalc/metal-transforms",
+  "src/metalc/metal-lower",
+  "src/metalc/msl-frontend",
+  "src/metalc/metalc",
+  "src/metalc/metalc-host-test",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/opendarwin/src"
+repository = "https://github.com/opendarwin-project/src"
 
 [workspace.dependencies]
 pliron = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
@@ -31,6 +32,16 @@ thiserror = "2"
 sha2 = "0.11"
 rustc-hash = "2"
 spin = "0.12.2"
+lz4rip = { version = "0.11.3", default-features = false, features = ["alloc"] }
+safe-mmio = "0.3.1"
+x86_64 = "0.15.5"
+arm-gic = "0.9.0"
+aarch64-cpu = "11.2.0"
+aarch64-paging = "0.12.1"
+virtio-drivers = "0.13.0"
+object = { version = "0.40.0", default-features = false, features = ["read_core", "macho", "elf"] }
+hadris-fat = { version = "2.0.0", default-features = false }
+hadris-io = { version = "2.0.0", default-features = false }
 
 metallib = { path = "metalc/metallib" }
 air-bitcode = { path = "metalc/air-bitcode" }
