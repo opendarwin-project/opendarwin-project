@@ -266,7 +266,7 @@ pub fn deliver(core_id: u64, frame: &mut Frame, task: &mut Task) -> bool {
             uc_mcontext: mctx_addr,
         };
 
-        if !usercopy::copy_out(sp, &sigframe) {
+        if !usercopy::copy_out(sp as usize, &sigframe) {
             sched::exit_current_task(core_id, frame);
             return true;
         }
@@ -326,7 +326,7 @@ pub fn deliver_current(core_id: u64, frame: &mut Frame) {
 pub fn sigreturn(
     frame: &mut Frame,
     task: &mut Task,
-    uctx_addr: u64,
+    uctx_addr: usize,
     style: i32,
     _token: u64,
 ) -> i64 {
@@ -336,7 +336,7 @@ pub fn sigreturn(
     let Some(uctx) = usercopy::copy_in::<UserUcontext>(uctx_addr) else {
         return -EFAULT;
     };
-    let Some(mctx) = usercopy::copy_in::<UserMcontext>(uctx.uc_mcontext) else {
+    let Some(mctx) = usercopy::copy_in::<UserMcontext>(uctx.uc_mcontext as usize) else {
         return -EFAULT;
     };
 

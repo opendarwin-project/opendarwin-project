@@ -1,44 +1,41 @@
 name: Rust
 
 on:
-    pull_request:
-    push:
-        branches:
-            - main
+  pull_request:
+  push:
+    branches:
+      - main
 
 env:
-    CARGO_TERM_COLOR: always
-    # GitHub-hosted macOS runners are currently on macOS 26 / AIR 2.8.
-    METALC_MACOS_MAJOR: "26"
-    METALC_AIR_VERSION: "2.8"
+  CARGO_TERM_COLOR: always
+  # GitHub-hosted macOS runners are currently on macOS 26 / AIR 2.8.
+  METALC_MACOS_MAJOR: "26"
+  METALC_AIR_VERSION: "2.8"
 
 jobs:
-    test:
-        runs-on: macos-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v6
+  # TODO: also run on macos-latest once wild (https://github.com/wild-linker/wild)
+  # builds/runs there too. For now this workspace's buck2 cxx toolchain
+  # (toolchains/BUCK) is aarch64 Linux-specific (`-Wl,-m,aarch64linux`,
+  # BLAKE3's NEON path), so everything lives in one job on an arm64 Linux
+  # runner.
+  build:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@nightly
-              with:
-                  components: rustfmt, clippy
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin,aarch64-unknown-none,x86_64-apple-darwin
 
-            - name: Install Nushell via Cargo Binstall
-              uses: taiki-e/install-action@v2
-              with:
-                  tool: nu, cargo-nextest
+      - uses: dtolnay/install-buck2@latest
 
-            - name: Cache cargo
-              uses: Swatinem/rust-cache@v2
+      - name: Install wild
+        run: tools/install-wild.sh "$HOME/.local/bin"
 
-            - name: Lint
-              run: cargo xtask clippy
-
-            - name: Run Tests
-              run: cargo xtask test
-
-            - name: Run framework tests
-              run: |
-                  cargo xtask framework
-                  cc -isysroot $(xcrun --show-sdk-path) -arch arm64 tools/iokit_smoke.c -o /tmp/smoke -framework IOKit && DYLD_FRAMEWORK_PATH=$PWD/target/frameworks /tmp/iokit_smoke
+      - name: Build everything through the wild-linked toolchain
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          buck2 build //...

@@ -13,7 +13,7 @@ pub const EINVAL: i64 = 22;
 pub const ESRCH: i64 = 3;
 
 pub fn handle(frame: &mut Frame) {
-    let num = frame.x[16] as u16;
+    let num = frame.arg_u32(16) as u16;
     match num {
         SYS_EXIT => sys_exit(frame),
         SYS_WRITE => sys_write(frame),
@@ -46,20 +46,21 @@ pub fn handle(frame: &mut Frame) {
             uart::print("syscall: unimplemented BSD syscall ");
             uart::print_dec(num as u64);
             uart::print("\n");
-            frame.x[0] = 0;
+            frame.set_return_u64(0);
         }
     }
 }
 
-fn copy_from_user(dst: &mut [u8], user_addr: u64) -> bool {
+fn copy_from_user(dst: &mut [u8], user_addr: usize) -> bool {
     if dst.is_empty() {
         return true;
     }
     let task = sched::current_task(cpu::core_id());
     let mut i = 0;
     while i < dst.len() {
-        let va = user_addr + (i as u64);
-        let Some(pa) = crate::mm::mmu::get_physical_address(unsafe { &*task.ttbr0 }, va) else {
+        let va = user_addr + i;
+        let Some(pa) = crate::mm::mmu::get_physical_address(unsafe { &*task.ttbr0 }, va as u64)
+        else {
             return false;
         };
         let page_left = (0x1000 - (va & 0xfff)) as usize;
@@ -74,16 +75,16 @@ fn copy_from_user(dst: &mut [u8], user_addr: u64) -> bool {
 }
 
 fn sys_write(frame: &mut Frame) {
-    let fd = frame.x[0];
-    let buf_addr = frame.x[1];
-    let len = frame.x[2];
+    let fd = frame.arg_u64(0);
+    let buf_addr = frame.arg(1);
+    let len = frame.arg(2);
     if fd == 1 || fd == 2 {
         let mut tmp = [0u8; 256];
-        let mut done = 0u64;
+        let mut done = 0usize;
         while done < len {
-            let chunk = ((len - done) as usize).min(tmp.len());
+            let chunk = (len - done).min(tmp.len());
             if !copy_from_user(&mut tmp[..chunk], buf_addr + done) {
-                frame.x[0] = (-EFAULT) as u64;
+                frame.set_return_i64(-EFAULT);
                 return;
             }
             if let Ok(s) = core::str::from_utf8(&tmp[..chunk]) {
@@ -91,89 +92,91 @@ fn sys_write(frame: &mut Frame) {
             } else {
                 uart::print_bytes(&tmp[..chunk]);
             }
-            done += chunk as u64;
+            done += chunk;
         }
-        frame.x[0] = len;
+        frame.set_return_usize(len);
     } else if let Some(ret) = fd::write(fd, buf_addr, len) {
-        frame.x[0] = ret;
+        frame.set_return_u64(ret);
     } else {
-        frame.x[0] = (-1i64) as u64;
+        frame.set_return_i64(-1);
     }
 }
 
 fn sys_read(frame: &mut Frame) {
-    let fd = frame.x[0];
+    let fd = frame.arg_u64(0);
+    let buf_addr = frame.arg(1);
+    let len = frame.arg(2);
     loop {
-        let Some(ret) = fd::read(fd, frame.x[1], frame.x[2]) else {
-            frame.x[0] = 0;
+        let Some(ret) = fd::read(fd, buf_addr, len) else {
+            frame.set_return_u64(0);
             return;
         };
         if fd::would_block(ret) && fd::is_socket(fd) {
             _ = sched::block_current_on_fd(cpu::core_id(), frame, fd);
             continue;
         }
-        frame.x[0] = ret;
+        frame.set_return_u64(ret);
         return;
     }
 }
 
 fn sys_open(frame: &mut Frame) {
-    frame.x[0] = fd::open(frame.x[0], frame.x[1], frame.x[2]);
+    frame.set_return_u64(fd::open(frame.arg(0), frame.arg_u64(1), frame.arg_u64(2)));
 }
 
 fn sys_close(frame: &mut Frame) {
-    frame.x[0] = fd::close(frame.x[0]).unwrap_or(0);
+    frame.set_return_u64(fd::close(frame.arg_u64(0)).unwrap_or(0));
 }
 
 fn sys_fstat(frame: &mut Frame) {
-    frame.x[0] = fd::fstat(frame.x[0], frame.x[1]);
+    frame.set_return_u64(fd::fstat(frame.arg_u64(0), frame.arg(1)));
 }
 
 fn sys_stat(frame: &mut Frame) {
-    frame.x[0] = fd::stat(frame.x[0], frame.x[1]);
+    frame.set_return_u64(fd::stat(frame.arg(0), frame.arg(1)));
 }
 
 fn sys_lseek(frame: &mut Frame) {
-    let whence = frame.x[2] as i32;
-    frame.x[0] = fd::lseek(frame.x[0], frame.x[1] as i64, whence);
+    let whence = frame.arg_i32(2);
+    frame.set_return_u64(fd::lseek(frame.arg_u64(0), frame.arg_i64(1), whence));
 }
 
 fn sys_mmap(frame: &mut Frame) {
-    let addr = frame.x[0];
-    let len = frame.x[1];
-    let prot = frame.x[2] as i32;
-    let flags = frame.x[3] as i32;
+    let addr = frame.arg_u64(0);
+    let len = frame.arg_u64(1);
+    let prot = frame.arg_i32(2);
+    let flags = frame.arg_i32(3);
     let vmm = sched::current_vmm(cpu::core_id());
-    frame.x[0] = vmm.mmap(addr, len, prot, flags);
+    frame.set_return_u64(vmm.mmap(addr, len, prot, flags));
 }
 
 fn sys_munmap(frame: &mut Frame) {
-    let addr = frame.x[0];
-    let len = frame.x[1];
+    let addr = frame.arg_u64(0);
+    let len = frame.arg_u64(1);
     let vmm = sched::current_vmm(cpu::core_id());
-    frame.x[0] = vmm.munmap(addr, len) as i64 as u64;
+    frame.set_return_i64(vmm.munmap(addr, len) as i64);
 }
 
 fn sys_mprotect(frame: &mut Frame) {
-    let addr = frame.x[0];
-    let len = frame.x[1];
-    let prot = frame.x[2] as i32;
+    let addr = frame.arg_u64(0);
+    let len = frame.arg_u64(1);
+    let prot = frame.arg_i32(2);
     let vmm = sched::current_vmm(cpu::core_id());
-    frame.x[0] = vmm.mprotect(addr, len, prot) as i64 as u64;
+    frame.set_return_i64(vmm.mprotect(addr, len, prot) as i64);
 }
 
 fn sys_semwait_signal(frame: &mut Frame) {
-    let has_timeout = frame.x[2] != 0;
+    let has_timeout = frame.arg_u64(2) != 0;
     if !has_timeout {
-        frame.x[0] = 0;
+        frame.set_return_u64(0);
         return;
     }
-    let relative = frame.x[3] != 0;
-    let tv_sec = frame.x[4] as i64;
-    let tv_nsec = (frame.x[5] & 0xffff_ffff) as i64;
+    let relative = frame.arg_u64(3) != 0;
+    let tv_sec = frame.arg_i64(4);
+    let tv_nsec = (frame.arg_u64(5) & 0xffff_ffff) as i64;
     const NSEC_PER_SEC: i64 = 1_000_000_000;
     if tv_sec < 0 || tv_nsec < 0 || tv_nsec >= NSEC_PER_SEC {
-        frame.x[0] = (-EINVAL) as u64;
+        frame.set_return_i64(-EINVAL);
         return;
     }
     let sec_ms = (tv_sec as u64).saturating_mul(1000);
@@ -185,58 +188,66 @@ fn sys_semwait_signal(frame: &mut Frame) {
         duration_ms
     };
     if deadline <= timer::now_ms() {
-        frame.x[0] = 0;
+        frame.set_return_u64(0);
         return;
     }
     _ = sched::block_current_until(cpu::core_id(), frame, deadline);
 }
 
 fn sys_socket(frame: &mut Frame) {
-    frame.x[0] = fd::socket(frame.x[0], frame.x[1], frame.x[2]);
+    frame.set_return_u64(fd::socket(
+        frame.arg_u64(0),
+        frame.arg_u64(1),
+        frame.arg_u64(2),
+    ));
 }
 
 fn sys_socketpair(frame: &mut Frame) {
-    frame.x[0] = fd::socketpair(frame.x[3]);
+    frame.set_return_u64(fd::socketpair(frame.arg(3)));
 }
 
 fn sys_getsockname(frame: &mut Frame) {
-    frame.x[0] = fd::getsockname(frame.x[0], frame.x[1], frame.x[2]);
+    frame.set_return_u64(fd::getsockname(
+        frame.arg_u64(0),
+        frame.arg(1),
+        frame.arg(2),
+    ));
 }
 
 fn sys_getpid(frame: &mut Frame) {
-    frame.x[0] = 1;
+    frame.set_return_u64(1);
 }
 
 fn sys_kill(frame: &mut Frame) {
-    let pid = frame.x[0] as i64;
-    let sig = frame.x[1] as u32;
+    let pid = frame.arg_i64(0);
+    let sig = frame.arg_u32(1);
     if pid != 0 && pid != 1 && pid != -1 {
-        frame.x[0] = (-ESRCH) as u64;
+        frame.set_return_i64(-ESRCH);
         return;
     }
     let proc = sched::current_process(cpu::core_id());
-    frame.x[0] = signal::post_process(proc, sig) as u64;
+    frame.set_return_i64(signal::post_process(proc, sig) as i64);
 }
 
 fn sys_pthread_kill(frame: &mut Frame) {
-    let thread_id = frame.x[0];
-    let sig = frame.x[1] as u32;
+    let thread_id = frame.arg_u64(0);
+    let sig = frame.arg_u32(1);
     let Some(task_ptr) = sched::task_by_thread_id(thread_id) else {
-        frame.x[0] = (-ESRCH) as u64;
+        frame.set_return_i64(-ESRCH);
         return;
     };
     unsafe {
-        frame.x[0] = signal::post_thread(&mut *task_ptr, sig) as u64;
+        frame.set_return_i64(signal::post_thread(&mut *task_ptr, sig) as i64);
     }
 }
 
 fn sys_sigaction(frame: &mut Frame) {
-    let sig = frame.x[0] as u32;
-    let nsa_ptr = frame.x[1];
-    let osa_ptr = frame.x[2];
+    let sig = frame.arg_u32(0);
+    let nsa_ptr = frame.arg(1);
+    let osa_ptr = frame.arg(2);
 
     if !signal::validate_signum(sig) || sig == crate::proc::SIGKILL || sig == crate::proc::SIGSTOP {
-        frame.x[0] = (-EINVAL) as u64;
+        frame.set_return_i64(-EINVAL);
         return;
     }
 
@@ -245,42 +256,42 @@ fn sys_sigaction(frame: &mut Frame) {
     if osa_ptr != 0 {
         let old = signal::action_to_user(signal::get_action(proc, sig));
         if !usercopy::copy_out(osa_ptr, &old) {
-            frame.x[0] = (-EFAULT) as u64;
+            frame.set_return_i64(-EFAULT);
             return;
         }
     }
 
     if nsa_ptr != 0 {
         let Some(nsa) = usercopy::copy_in::<signal::User64SigactionIn>(nsa_ptr) else {
-            frame.x[0] = (-EFAULT) as u64;
+            frame.set_return_i64(-EFAULT);
             return;
         };
         let err = signal::set_action(proc, sig, Some(nsa));
         if err < 0 {
-            frame.x[0] = err as u64;
+            frame.set_return_i64(err as i64);
             return;
         }
     }
 
-    frame.x[0] = 0;
+    frame.set_return_u64(0);
 }
 
 fn sys_sigprocmask(frame: &mut Frame) {
-    let how = frame.x[0] as i32;
-    let set_ptr = frame.x[1];
-    let oset_ptr = frame.x[2];
+    let how = frame.arg_i32(0);
+    let set_ptr = frame.arg(1);
+    let oset_ptr = frame.arg(2);
     let task = sched::current_task(cpu::core_id());
 
     if oset_ptr != 0 {
         if !usercopy::copy_out(oset_ptr, &task.sig_mask) {
-            frame.x[0] = (-EFAULT) as u64;
+            frame.set_return_i64(-EFAULT);
             return;
         }
     }
 
     if set_ptr != 0 {
         let Some(set) = usercopy::copy_in::<u32>(set_ptr) else {
-            frame.x[0] = (-EFAULT) as u64;
+            frame.set_return_i64(-EFAULT);
             return;
         };
         match how {
@@ -288,54 +299,54 @@ fn sys_sigprocmask(frame: &mut Frame) {
             2 => task.sig_mask &= !(set & !SIGCANTMASK), // SIG_UNBLOCK
             3 => task.sig_mask = set & !SIGCANTMASK,     // SIG_SETMASK
             _ => {
-                frame.x[0] = (-EINVAL) as u64;
+                frame.set_return_i64(-EINVAL);
                 return;
             }
         }
     }
 
-    frame.x[0] = 0;
+    frame.set_return_u64(0);
 }
 
 fn sys_sigreturn(frame: &mut Frame) {
-    let uctx = frame.x[0];
-    let style = frame.x[1] as i32;
-    let token = frame.x[2];
+    let uctx = frame.arg(0);
+    let style = frame.arg_i32(1);
+    let token = frame.arg_u64(2);
     let task = sched::current_task(cpu::core_id());
     let err = signal::sigreturn(frame, task, uctx, style, token);
     if err < 0 {
-        frame.x[0] = err as u64;
+        frame.set_return_i64(err);
     }
 }
 
 fn sys_exit(frame: &mut Frame) {
     uart::print("opendarwin: task called exit(");
-    uart::print_dec(frame.x[0]);
+    uart::print_dec(frame.arg_u64(0));
     uart::print(")\n");
     sched::exit_current_task(cpu::core_id(), frame);
 }
 
 fn sys_bsdthread_register(frame: &mut Frame) {
-    let thread_start = frame.x[0];
-    let wqstart = frame.x[1];
-    frame.x[0] = if sched::register_bsd_thread(cpu::core_id(), thread_start, wqstart) {
-        0
+    let thread_start = frame.arg_u64(0);
+    let wqstart = frame.arg_u64(1);
+    if sched::register_bsd_thread(cpu::core_id(), thread_start, wqstart) {
+        frame.set_return_u64(0);
     } else {
-        (-EINVAL) as u64
-    };
+        frame.set_return_i64(-EINVAL);
+    }
 }
 
 fn sys_bsdthread_create(frame: &mut Frame) {
-    let start_routine = frame.x[0];
-    let arg = frame.x[1];
-    let stack_top = frame.x[2];
-    let pthread = frame.x[3];
+    let start_routine = frame.arg_u64(0);
+    let arg = frame.arg_u64(1);
+    let stack_top = frame.arg_u64(2);
+    let pthread = frame.arg_u64(3);
     if let Some(id) =
         sched::create_bsd_thread(cpu::core_id(), start_routine, arg, stack_top, pthread)
     {
-        frame.x[0] = id;
+        frame.set_return_u64(id);
     } else {
-        frame.x[0] = (-EINVAL) as u64;
+        frame.set_return_i64(-EINVAL);
     }
 }
 
@@ -344,20 +355,20 @@ fn sys_bsdthread_terminate(frame: &mut Frame) {
 }
 
 fn sys_thread_selfid(frame: &mut Frame) {
-    frame.x[0] = sched::current_thread_id(cpu::core_id());
+    frame.set_return_u64(sched::current_thread_id(cpu::core_id()));
 }
 
 fn sys_ulock_wait2(frame: &mut Frame) {
-    let op = frame.x[0] as u32;
-    let addr = frame.x[1];
-    let timeout_ns = frame.x[3];
+    let op = frame.arg_u32(0);
+    let addr = frame.arg_u64(1);
+    let timeout_ns = frame.arg_u64(3);
     let ulf_no_errno = 0x0100_0000;
     if (op & 0x0f) != 1 {
-        frame.x[0] = if (op & ulf_no_errno) != 0 {
-            (-EINVAL) as u64
+        if (op & ulf_no_errno) != 0 {
+            frame.set_return_i64(-EINVAL);
         } else {
-            0
-        };
+            frame.set_return_u64(0);
+        }
         return;
     }
 
@@ -371,9 +382,9 @@ fn sys_ulock_wait2(frame: &mut Frame) {
 }
 
 fn sys_ulock_wake(frame: &mut Frame) {
-    let op = frame.x[0] as u32;
-    let addr = frame.x[1];
+    let op = frame.arg_u32(0);
+    let addr = frame.arg_u64(1);
     let wake_all = (op & 0x0000_0100) != 0;
     let max_count = if wake_all { 0 } else { 1 };
-    frame.x[0] = sched::wake_ulock(addr, max_count);
+    frame.set_return_u64(sched::wake_ulock(addr, max_count));
 }

@@ -33,6 +33,53 @@ impl Default for Frame {
     }
 }
 
+impl Frame {
+    #[inline(always)]
+    pub fn arg(&self, index: usize) -> usize {
+        self.x[index] as usize
+    }
+
+    #[inline(always)]
+    pub fn arg_u64(&self, index: usize) -> u64 {
+        self.x[index]
+    }
+
+    #[inline(always)]
+    pub fn arg_u32(&self, index: usize) -> u32 {
+        self.x[index] as u32
+    }
+
+    #[inline(always)]
+    pub fn arg_i32(&self, index: usize) -> i32 {
+        self.x[index] as i32
+    }
+
+    #[inline(always)]
+    pub fn arg_i64(&self, index: usize) -> i64 {
+        self.x[index] as i64
+    }
+
+    #[inline(always)]
+    pub fn set_return_usize(&mut self, val: usize) {
+        self.x[0] = val as u64;
+    }
+
+    #[inline(always)]
+    pub fn set_return_u64(&mut self, val: u64) {
+        self.x[0] = val;
+    }
+
+    #[inline(always)]
+    pub fn set_return_u32(&mut self, val: u32) {
+        self.x[0] = val as u64;
+    }
+
+    #[inline(always)]
+    pub fn set_return_i64(&mut self, val: i64) {
+        self.x[0] = val as u64;
+    }
+}
+
 const _: () = {
     assert!(core::mem::offset_of!(Frame, sp_el0) == 248);
     assert!(core::mem::offset_of!(Frame, q) == 288);

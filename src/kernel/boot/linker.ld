@@ -4,7 +4,7 @@ KERNEL_LOAD_ADDR = 0x40080000;
 
 SECTIONS
 {
-    . = KERNEL_LOAD_ADDR;
+    . = 0x40080000; /* KERNEL_LOAD_ADDR */
 
     .text : ALIGN(4096) {
         KEEP(*(.text.boot))
@@ -48,7 +48,16 @@ SECTIONS
      * kernel ever actually grows past 6MB, this line makes the linker fail
      * loudly (location counter moving backward) instead of silently
      * reintroducing the page_pool/kernel_regions overlap bug. */
-    . = KERNEL_LOAD_ADDR + 0x600000;
+    . = 0x40680000; /* KERNEL_LOAD_ADDR + 0x600000 */
+
+    /* Dedicated symbol for the reservation boundary, independent of
+     * .userpages' own address below: when nothing currently contributes to
+     * .userpages (no userland content built into this image yet), wild
+     * collapses that *empty* output section's address to 0 rather than
+     * this location-counter value, which silently zeroed out kmain.rs's
+     * free-memory computation (PMM tried to claim from physical address 0
+     * instead of past the 6MB reservation, faulting on unmapped low RAM). */
+    __kernel_reserved_end = .;
 
     /* Deliberately separate from .bss and placed after __kernel_end: pages
      * handed out by mm/mmu.zig's allocPage() (backing task code/data/stack

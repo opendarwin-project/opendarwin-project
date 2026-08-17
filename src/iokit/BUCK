@@ -1,0 +1,10 @@
+# See src/libsystem/BUCK: this builds the crate as a host rlib for typecheck
+# coverage / downstream first-party deps, not the shipped `IOKit` dylib.
+rust_library(
+    name = "iokit",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "IOKit",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+)

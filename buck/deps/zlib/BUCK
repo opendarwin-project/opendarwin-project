@@ -1,0 +1,87 @@
+
+VERSION = '0.6.7'
+
+http_archive(
+    name = 'src',
+    sha256 = 'a2dac1f1102f01a2da1ec5b708f8f3832cedad138a6732f241204fa0f3617b81',
+    urls = [
+        f'https://github.com/trifectatechfoundation/zlib-rs/archive/refs/tags/v{VERSION}.tar.gz',
+    ],
+    type = 'tar.gz',
+    strip_prefix = f'zlib-rs-{VERSION}',
+    visibility = [],
+    sub_targets = [
+        'libz-rs-sys/include/zlib.h',
+        'libz-rs-sys-cdylib/src/lib.rs',
+    ],
+)
+
+rust_library(
+    name = 'zlib_rs',
+    srcs = [':src'],
+    edition = '2021',
+    crate_root = 'src/zlib-rs/src/lib.rs',
+    features = ["__internal-api"],
+    rustc_flags = ['-Crelocation-model=pic'],
+    visibility = ["PUBLIC"],
+)
+
+rust_library(
+    name = 'libz_rs_sys',
+    srcs = [':src'],
+    edition = '2021',
+    crate_root = 'src/libz-rs-sys/src/lib.rs',
+    features = ['export-symbols', 'c-allocator'],
+    rustc_flags = ['-Crelocation-model=pic'],
+    deps = [
+        ':zlib_rs',
+    ],
+    env = {
+        'CARGO_PKG_VERSION': VERSION,
+        'CARGO_PKG_VERSION_MAJOR': VERSION.split('.')[0],
+        'CARGO_PKG_VERSION_MINOR': VERSION.split('.')[1],
+        'CARGO_PKG_VERSION_PATCH': VERSION.split('.')[2] if len(VERSION.split('.')) > 2 else '0',
+        'CARGO_PKG_NAME': 'libz-rs-sys',
+    },
+)
+
+rust_library(
+    name = 'libz',
+    srcs = [':src'],
+    edition = '2021',
+    crate_root = 'src/libz-rs-sys-cdylib/src/lib.rs',
+    rustc_flags = ["-Cpanic=abort", "-Crelocation-model=pic"],
+    deps = [
+        ':libz_rs_sys',
+    ],
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "cbindgen_config",
+    out = "cbindgen.toml",
+    cmd = 'echo -e "[parse.expand]\nfeatures = [\\"export-symbols\\", \\"c-allocator\\"]" > $OUT',
+)
+
+# Genrule for generating the zlib.h header file from src/libz-rs-sys/include
+genrule(
+    name = 'zlib_h',
+    srcs = [':src'],
+    out = 'zlib.h',
+    cmd = 'cbindgen --config $(location :cbindgen_config) $(location :src[libz-rs-sys-cdylib/src/lib.rs]) > $OUT',
+    visibility = ["PUBLIC"],
+)
+
+# C-consumer-facing target: real zlib.h + the cdylib crate's exported (real,
+# unprefixed) C ABI symbols, for cxx_library/cxx_binary `deps`. `libz` is a
+# rust_library, whose default (rlib) output isn't consumable as a native
+# link dependency by cxx rules, so this links its `[staticlib]` sub-target
+# (libz_rs_sys built with `export-symbols` + `c-allocator`) directly --
+# static, so consumers don't need a runtime rpath to a buck-out .so.
+cxx_library(
+    name = 'zlib_c',
+    header_namespace = '',
+    exported_headers = {'zlib.h': ':zlib_h'},
+    exported_linker_flags = ['$(location :libz[staticlib])'],
+    visibility = ['PUBLIC'],
+)

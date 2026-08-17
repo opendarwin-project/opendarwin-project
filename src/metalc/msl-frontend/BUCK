@@ -1,0 +1,12 @@
+rust_library(
+    name = "msl-frontend",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/metalc/dialect-metal:dialect-metal",
+        "deps//rust:annotate-snippets",
+        "deps//rust:pliron",
+    ],
+    visibility = ["PUBLIC"],
+)
