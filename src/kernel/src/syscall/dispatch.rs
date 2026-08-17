@@ -15,7 +15,8 @@ fn svc_imm(elr: u64) -> u16 {
 
 pub fn handle(frame: &mut Frame) {
     let imm = svc_imm(frame.elr_el1);
-    if imm == 0x81 {
+    let x16 = frame.arg_u32(16) as i32;
+    if imm == 0x81 || x16 < 0 {
         mach::handle(frame);
     } else {
         unix::handle(frame);

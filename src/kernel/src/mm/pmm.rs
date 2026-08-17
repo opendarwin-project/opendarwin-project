@@ -22,10 +22,11 @@ pub struct PageMeta {
     pub refcount: u8,
 }
 
-const MAX_PAGES: usize = 32 * 1024; // 128 MB
+const MAX_PAGES: usize = 128 * 1024; // 512 MB
 
 struct PmmState {
     page_meta: [PageMeta; MAX_PAGES],
+    base_pfn: u64,
     max_pfn: u64,
     free_head: Option<u64>,
     total_free_pages: u64,
@@ -37,11 +38,24 @@ static PMM: Mutex<PmmState> = Mutex::new(PmmState {
         state: PageState::Free,
         refcount: 0,
     }; MAX_PAGES],
+    base_pfn: 0,
     max_pfn: 0,
     free_head: None,
     total_free_pages: 0,
     total_alloced_pages: 0,
 });
+
+#[inline(always)]
+fn pa_to_meta_index(base_pfn: u64, max_pfn: u64, pa: u64) -> Option<usize> {
+    let pfn = pa_to_pfn(pa);
+    if pfn >= base_pfn {
+        let idx = (pfn - base_pfn) as usize;
+        if idx < (max_pfn as usize) && idx < MAX_PAGES {
+            return Some(idx);
+        }
+    }
+    None
+}
 
 #[inline(always)]
 fn pa_to_pfn(pa: u64) -> u64 {
@@ -62,17 +76,30 @@ pub struct PageSlice {
 
 pub fn init(regions: &[MemoryRegion]) {
     let mut pmm = PMM.lock();
+    let mut min_pfn = u64::MAX;
+    let mut max_pfn = 0u64;
     for r in regions {
+        let start = r.base;
         let end = r.base + r.size;
+        let aligned_start = (start + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let aligned_end = end & !(PAGE_SIZE - 1);
+        if aligned_start >= aligned_end {
+            continue;
+        }
+        let start_pfn = pa_to_pfn(aligned_start);
         let end_pfn = pa_to_pfn(aligned_end);
-        if end_pfn > pmm.max_pfn {
-            pmm.max_pfn = end_pfn;
+        if start_pfn < min_pfn {
+            min_pfn = start_pfn;
+        }
+        if end_pfn > max_pfn {
+            max_pfn = end_pfn;
         }
     }
 
-    if pmm.max_pfn > MAX_PAGES as u64 {
-        pmm.max_pfn = MAX_PAGES as u64;
+    if min_pfn != u64::MAX {
+        pmm.base_pfn = min_pfn;
+        let count = (max_pfn - min_pfn).min(MAX_PAGES as u64);
+        pmm.max_pfn = count;
     }
 
     for i in 0..pmm.max_pfn as usize {
@@ -81,7 +108,6 @@ pub fn init(regions: &[MemoryRegion]) {
             refcount: 0,
         };
     }
-
     for r in regions {
         let start = r.base;
         let end = r.base + r.size;
@@ -134,10 +160,9 @@ fn alloc_page_internal(zero: bool) -> u64 {
     pmm.total_free_pages -= 1;
     pmm.total_alloced_pages += 1;
 
-    let pfn = pa_to_pfn(page);
-    if pfn < pmm.max_pfn {
-        pmm.page_meta[pfn as usize].state = PageState::Allocated;
-        pmm.page_meta[pfn as usize].refcount = 1;
+    if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, page) {
+        pmm.page_meta[idx].state = PageState::Allocated;
+        pmm.page_meta[idx].refcount = 1;
     }
 
     if zero {
@@ -151,40 +176,11 @@ fn alloc_page_internal(zero: bool) -> u64 {
 
 pub fn alloc_pages(count: u64) -> PageSlice {
     assert!(count > 0, "pmm: zero-page allocation");
-
-    let mut pmm = PMM.lock();
-    let first = pmm.free_head.expect("pmm: out of memory");
-
-    let mut last = first;
-    let mut i = 1;
-    while i < count {
-        let last_ptr = last as *const Option<u64>;
-        last = unsafe { (*last_ptr).expect("pmm: out of memory while allocating page chain") };
-        i += 1;
+    let base = alloc_pages_contig(count);
+    if base == 0 {
+        panic!("pmm: out of memory");
     }
-
-    let last_ptr = last as *const Option<u64>;
-    pmm.free_head = unsafe { *last_ptr };
-    pmm.total_free_pages -= count;
-    pmm.total_alloced_pages += count;
-
-    let mut page = first;
-    let mut j = 0;
-    while j < count {
-        let pfn = pa_to_pfn(page);
-        if pfn < pmm.max_pfn {
-            pmm.page_meta[pfn as usize].state = PageState::Allocated;
-            pmm.page_meta[pfn as usize].refcount = 1;
-        }
-        let ptr = page as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
-        }
-        page += PAGE_SIZE;
-        j += 1;
-    }
-
-    PageSlice { base: first, count }
+    PageSlice { base, count }
 }
 
 pub fn alloc_pages_contig(count: u64) -> u64 {
@@ -199,7 +195,6 @@ pub fn alloc_pages_contig(count: u64) -> u64 {
     let mut candidate = 0u64;
     let mut run = 0u64;
     let mut cur = pmm.free_head;
-
     while let Some(page) = cur {
         if candidate != 0 && page == candidate + run * PAGE_SIZE {
             run += 1;
@@ -224,10 +219,9 @@ pub fn alloc_pages_contig(count: u64) -> u64 {
         pmm.total_free_pages -= 1;
         pmm.total_alloced_pages += 1;
 
-        let pfn = pa_to_pfn(target);
-        if pfn < pmm.max_pfn {
-            pmm.page_meta[pfn as usize].state = PageState::Allocated;
-            pmm.page_meta[pfn as usize].refcount = 1;
+        if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, target) {
+            pmm.page_meta[idx].state = PageState::Allocated;
+            pmm.page_meta[idx].refcount = 1;
         }
     }
 
@@ -262,10 +256,9 @@ fn remove_page_from_list(pmm: &mut PmmState, target: u64) {
 
 pub fn free_page(pa: u64) {
     let mut pmm = PMM.lock();
-    let pfn = pa_to_pfn(pa);
-    if pfn < pmm.max_pfn {
-        pmm.page_meta[pfn as usize].state = PageState::Free;
-        pmm.page_meta[pfn as usize].refcount = 0;
+    if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, pa) {
+        pmm.page_meta[idx].state = PageState::Free;
+        pmm.page_meta[idx].refcount = 0;
     }
 
     let ptr = pa as *mut Option<u64>;
@@ -287,12 +280,11 @@ pub fn free_pages(base: u64, count: u64) {
 
 pub fn retain_page(pa: u64) -> u8 {
     let mut pmm = PMM.lock();
-    let pfn = pa_to_pfn(pa);
-    if pfn < pmm.max_pfn {
-        let next = pmm.page_meta[pfn as usize].refcount.saturating_add(1);
-        pmm.page_meta[pfn as usize].refcount = next;
+    if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, pa) {
+        let next = pmm.page_meta[idx].refcount.saturating_add(1);
+        pmm.page_meta[idx].refcount = next;
         if next > 1 {
-            pmm.page_meta[pfn as usize].state = PageState::Shared;
+            pmm.page_meta[idx].state = PageState::Shared;
         }
         next
     } else {
@@ -302,17 +294,16 @@ pub fn retain_page(pa: u64) -> u8 {
 
 pub fn release_page(pa: u64) -> bool {
     let mut pmm = PMM.lock();
-    let pfn = pa_to_pfn(pa);
-    if pfn < pmm.max_pfn {
-        if pmm.page_meta[pfn as usize].refcount > 1 {
-            pmm.page_meta[pfn as usize].refcount -= 1;
-            if pmm.page_meta[pfn as usize].refcount == 1 {
-                pmm.page_meta[pfn as usize].state = PageState::Allocated;
+    if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, pa) {
+        if pmm.page_meta[idx].refcount > 1 {
+            pmm.page_meta[idx].refcount -= 1;
+            if pmm.page_meta[idx].refcount == 1 {
+                pmm.page_meta[idx].state = PageState::Allocated;
             }
             false
         } else {
-            pmm.page_meta[pfn as usize].state = PageState::Free;
-            pmm.page_meta[pfn as usize].refcount = 0;
+            pmm.page_meta[idx].state = PageState::Free;
+            pmm.page_meta[idx].refcount = 0;
             let ptr = pa as *mut Option<u64>;
             unsafe {
                 *ptr = pmm.free_head;
@@ -331,9 +322,8 @@ pub fn release_page(pa: u64) -> bool {
 
 pub fn get_refcount(pa: u64) -> u8 {
     let pmm = PMM.lock();
-    let pfn = pa_to_pfn(pa);
-    if pfn < pmm.max_pfn {
-        pmm.page_meta[pfn as usize].refcount
+    if let Some(idx) = pa_to_meta_index(pmm.base_pfn, pmm.max_pfn, pa) {
+        pmm.page_meta[idx].refcount
     } else {
         0
     }

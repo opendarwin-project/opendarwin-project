@@ -1,0 +1,50 @@
+# Custom target platforms for the non-host rustc triples this workspace
+# builds for: userland/Darwin binaries (aarch64-apple-darwin,
+# arm64e-apple-darwin) and the freestanding kernel (aarch64-unknown-none).
+# `prelude//platforms:default` (host: aarch64-unknown-linux-gnu) remains the
+# execution platform and the default target platform for xtask/tooling.
+
+constraint_setting(name = "apple-ptrauth")
+
+constraint_value(
+    name = "arm64e",
+    constraint_setting = ":apple-ptrauth",
+    visibility = ["PUBLIC"],
+)
+
+constraint_setting(name = "freestanding")
+
+constraint_value(
+    name = "kernel",
+    constraint_setting = ":freestanding",
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "macos-arm64",
+    constraint_values = [
+        "prelude//os/constraints:macos",
+        "prelude//cpu/constraints:arm64",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "macos-arm64e",
+    constraint_values = [
+        "prelude//os/constraints:macos",
+        "prelude//cpu/constraints:arm64",
+        ":arm64e",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "kernel-aarch64",
+    constraint_values = [
+        "prelude//os/constraints:none",
+        "prelude//cpu/constraints:arm64",
+        ":kernel",
+    ],
+    visibility = ["PUBLIC"],
+)

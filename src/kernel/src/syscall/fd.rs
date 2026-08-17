@@ -1,10 +1,9 @@
 //! File descriptor table supporting Unix sockets, VFS vnodes, and standard I/O.
 
-use crate::fs::namei;
-use crate::fs::vfs::{self, Vnode};
 use crate::proc::sched;
 use crate::syscall::usercopy;
 use spin::Mutex;
+use vfs::{self, Vnode, namei};
 
 pub const MAX_FDS: usize = 64;
 pub const BUF_SIZE: usize = 4096;
@@ -149,7 +148,7 @@ pub fn would_block(ret: u64) -> bool {
     ret == neg(EAGAIN)
 }
 
-pub fn socketpair(sv_addr: u64) -> u64 {
+pub fn socketpair(sv_addr: usize) -> u64 {
     if sv_addr == 0 {
         return neg(EINVAL);
     }
@@ -187,12 +186,11 @@ pub fn socket(domain: u64, _typ: u64, _proto: u64) -> u64 {
     fd as u64
 }
 
-pub fn open(path_addr: u64, flags: u64, _mode: u64) -> u64 {
+pub fn open(path_addr: usize, flags: u64, _mode: u64) -> u64 {
     let mut path_buf = [0u8; namei::MAX_PATH];
-    let Some(path) = namei::copyin_path(path_addr, &mut path_buf) else {
+    let Some(path) = usercopy::copyin_path(path_addr, &mut path_buf) else {
         return neg(EFAULT);
     };
-
     let fl = flags as u32;
     let acc = fl & O_ACCMODE;
     if acc == O_WRONLY || acc == O_RDWR {
@@ -261,7 +259,7 @@ pub fn close(fd: u64) -> Option<u64> {
     Some(neg(EBADF))
 }
 
-pub fn write(fd: u64, buf_addr: u64, len: u64) -> Option<u64> {
+pub fn write(fd: u64, buf_addr: usize, len: usize) -> Option<u64> {
     let mut files = FILES.lock();
     if let Some(idx) = valid_socket(&files, fd) {
         if buf_addr == 0 && len != 0 {
@@ -298,7 +296,7 @@ pub fn write(fd: u64, buf_addr: u64, len: u64) -> Option<u64> {
     None
 }
 
-pub fn read(fd: u64, buf_addr: u64, len: u64) -> Option<u64> {
+pub fn read(fd: u64, buf_addr: usize, len: usize) -> Option<u64> {
     let mut files = FILES.lock();
     if let Some(idx) = valid_socket(&files, fd) {
         if buf_addr == 0 && len != 0 {
@@ -337,11 +335,11 @@ pub fn read(fd: u64, buf_addr: u64, len: u64) -> Option<u64> {
             return Some(0);
         }
 
-        let mut total = 0u64;
+        let mut total = 0usize;
         let mut remaining = len;
         while remaining > 0 {
             let mut tmp = [0u8; BUF_SIZE];
-            let chunk = (remaining as usize).min(BUF_SIZE);
+            let chunk = remaining.min(BUF_SIZE);
             let n = vfs::vop_read(vp, vf.offset, &mut tmp[..chunk]);
             if n < 0 {
                 return Some(neg(-n));
@@ -354,13 +352,13 @@ pub fn read(fd: u64, buf_addr: u64, len: u64) -> Option<u64> {
                 return Some(neg(EFAULT));
             }
             vf.offset += got as u64;
-            total += got as u64;
-            remaining -= got as u64;
+            total += got;
+            remaining -= got;
             if got < chunk {
                 break;
             }
         }
-        return Some(total);
+        return Some(total as u64);
     }
     None
 }
@@ -393,7 +391,7 @@ pub fn lseek(fd: u64, offset: i64, whence: i32) -> u64 {
     vf.offset
 }
 
-pub fn fstat(fd: u64, ub: u64) -> u64 {
+pub fn fstat(fd: u64, ub: usize) -> u64 {
     let files = FILES.lock();
     let Some(idx) = valid_vnode(&files, fd) else {
         return neg(EBADF);
@@ -410,9 +408,9 @@ pub fn fstat(fd: u64, ub: u64) -> u64 {
     0
 }
 
-pub fn stat(path_addr: u64, ub: u64) -> u64 {
+pub fn stat(path_addr: usize, ub: usize) -> u64 {
     let mut path_buf = [0u8; namei::MAX_PATH];
-    let Some(path) = namei::copyin_path(path_addr, &mut path_buf) else {
+    let Some(path) = usercopy::copyin_path(path_addr, &mut path_buf) else {
         return neg(EFAULT);
     };
     let Some(vp) = namei::lookup(path) else {
@@ -431,7 +429,7 @@ pub fn stat(path_addr: u64, ub: u64) -> u64 {
     0
 }
 
-pub fn getsockname(fd: u64, addr: u64, len_addr: u64) -> u64 {
+pub fn getsockname(fd: u64, addr: usize, len_addr: usize) -> u64 {
     let files = FILES.lock();
     if valid_socket(&files, fd).is_none() {
         return neg(EBADF);

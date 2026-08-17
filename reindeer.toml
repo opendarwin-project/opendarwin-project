@@ -1,0 +1,34 @@
+##
+## Reindeer config: buckify the Cargo workspace's third-party dependencies.
+##
+## Run `reindeer buckify` from the repo root after touching any Cargo.toml or
+## Cargo.lock; it regenerates buck/deps/rust/BUCK from the workspace lockfile.
+
+third_party_dir = "buck/deps/rust"
+
+precise_srcs = true
+include_top_level = true
+include_workspace_members = true
+
+# Reindeer platforms mirror the rustc target triples this workspace actually
+# builds for (see platforms/BUCK + PACKAGE). `linux-arm64` is also the host
+# platform buck2/cargo/proc-macros execute on.
+[platform.linux-arm64]
+target = "aarch64-unknown-linux-gnu"
+execution-platform = true
+target_os = ["linux"]
+
+[platform.macos-arm64]
+target = "aarch64-apple-darwin"
+execution-platform = false
+target_os = ["macos"]
+
+[platform.macos-arm64e]
+target = "arm64e-apple-darwin"
+execution-platform = false
+target_os = ["macos"]
+
+[platform.kernel-aarch64]
+target = "aarch64-unknown-none"
+execution-platform = false
+target_os = ["none"]

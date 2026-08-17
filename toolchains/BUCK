@@ -1,0 +1,91 @@
+load(":local_demo.bzl", "local_demo_toolchains")
+load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
+load("@prelude//toolchains/cxx/clang:tools.bzl", "path_clang_tools")
+
+local_demo_toolchains()
+
+system_cxx_toolchain(
+    name = "cxx-linux",
+    link_flags = [
+        "-fuse-ld=wild",
+        "-Wl,-m,aarch64linux",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# `path_clang_tools`' own `linker_type` default only resolves against the
+# *execution* platform (an `exec_dep`, always this Linux host) - so it never
+# picks its own `config//os:macos` branch for us. Force it explicitly so
+# `:cxx-darwin` synthesizes Mach-O-flavored linker args (Rust userland
+# targets are Darwin-configured, but always host-executed).
+path_clang_tools(
+    name = "clang-tools-darwin",
+    linker_type = "darwin",
+)
+# rustc's aarch64-apple-darwin target spec unconditionally appends `-lSystem`
+# (baked into the compiler, no way to suppress it) even for a `-nostdlib`,
+# no_std binary - it assumes libSystem.dylib always exists on the host doing
+# the linking, which isn't true here (no real macOS SDK). We don't need
+# anything from the real libSystem.dylib: :libsystem (src/libsystem) already
+# reimplements every syscall wrapper these binaries use. So give the linker
+# an empty `libSystem.a` just to satisfy the search, rather than patching
+# rustc.
+genrule(
+    name = "libsystem-stub-dir",
+    out = "lib",
+    cmd = "mkdir -p $OUT && ar rcs $OUT/libSystem.a",
+)
+
+# Links Rust userland Mach-O binaries (root//platforms:macos-arm64) with
+# wild, our vendored Mach-O-capable linker fork (see tools/install-wild.sh).
+# No real macOS SDK exists on this Linux host, so `-nostdlib`/`-nostartfiles`
+# keep clang from hunting for crt1.o/libSystem.tbd: the kernel's own Mach-O
+# loader jumps straight to LC_MAIN's `main` symbol, and :libsystem supplies
+# every runtime symbol these binaries need.
+system_cxx_toolchain(
+    name = "cxx-darwin",
+    compiler_type = "clang",
+    link_flags = [
+        "--target=aarch64-apple-darwin",
+        "-arch",
+        "arm64",
+        "-mmacosx-version-min=14.0",
+        "--ld-path=ld64",
+        "-nostdlib",
+        "-nostartfiles",
+        "-L$(location :libsystem-stub-dir)",
+    ],
+    _cxx_tools_info = ":clang-tools-darwin",
+    visibility = ["PUBLIC"],
+)
+
+toolchain_alias(
+    name = "cxx",
+    actual = select({
+        "prelude//os/constraints:macos": ":cxx-darwin",
+        "DEFAULT": ":cxx-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+system_rust_toolchain(
+    name = "rust",
+    default_edition = "2024",
+    rustc_flags = select({
+        "root//platforms:kernel": ["-Cpanic=abort", "-Zunstable-options", "-Clinker-flavor=gnu-cc", "-Clink-arg=-nostdlib", "-Clink-arg=-static", "-Clink-arg=-Wl,-m,aarch64linux"],
+        # `unpacked` avoids rustc emitting `-Wl,-oso_prefix,...`: that flag
+        # requests N_OSO debug-map stabs entries (for dsymutil/atos to find
+        # the original .o files) - real macOS-only tooling this project has
+        # no use for, and wild's Mach-O backend doesn't implement debug-map
+        # generation at all, so packed (the Darwin default) would fail here.
+        "prelude//os/constraints:macos": ["-Cpanic=abort", "-Csplit-debuginfo=unpacked"],
+        "DEFAULT": [],
+    }),
+    rustc_target_triple = select({
+        "root//platforms:kernel": "aarch64-unknown-none",
+        "prelude//os/constraints:macos": "aarch64-apple-darwin",
+        "DEFAULT": "aarch64-unknown-linux-gnu",
+    }),
+    visibility = ["PUBLIC"],
+)
