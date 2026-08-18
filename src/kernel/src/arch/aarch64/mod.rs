@@ -11,23 +11,48 @@ core::arch::global_asm!(
 .global vector_table
 
 _start:
-    nop                     // code0
-    b real_start            // code1
-    .quad 0x80000           // text_offset
+    b real_start            // code0
+    .long 0                 // code1
+    .quad 0                 // text_offset
     .quad __image_size      // image_size
-    .quad 0                 // flags
+    .quad 8                 // flags: bit3 = 2 MiB-aligned, placeable anywhere
     .quad 0                 // reserved
     .quad 0                 // reserved
     .quad 0                 // reserved
     .ascii "ARM\x64"        // magic
-    .word 0                 // res5
+    .long 0                 // res5
 
 real_start:
-    mov x20, x0
+    mov x20, x0             // Stash DTB pointer passed in x0
 
+    // Check primary vs secondary core *before* touching any shared state:
+    // secondary cores are PSCI-booted straight back to this same entry
+    // point, long after the primary has already zeroed .bss and built
+    // live kernel state (KERNEL_ROOT's page tables, SCHED, PMM, ...) in
+    // it - unconditionally re-running the zero loop below would wipe that
+    // state out from under the primary while it's running, corrupting
+    // in-use page-table entries (observed: sporadic translation faults
+    // once secondary cores actually woke via a working PSCI conduit).
     mrs x0, mpidr_el1
     and x0, x0, #0xff
-    cbz x0, primary_core
+    cbnz x0, secondary_park
+
+    // Setup primary boot stack
+    adrp x0, __boot_stack_top
+    add x0, x0, :lo12:__boot_stack_top
+    mov sp, x0
+
+    // Zero .bss (primary core only - see above)
+    adrp x1, __bss_start
+    add x1, x1, :lo12:__bss_start
+    adrp x2, __bss_end
+    add x2, x2, :lo12:__bss_end
+zero_bss:
+    cmp x1, x2
+    b.ge primary_entry
+    str xzr, [x1], #8
+    b zero_bss
+
 
 secondary_park:
     adrp x1, smp_wake_flag
@@ -65,62 +90,35 @@ secondary_el1_setup:
     isb
     ret
 
-primary_core:
-    mrs x0, CurrentEL
-    lsr x0, x0, #2
-    cmp x0, #2
-    b.eq from_el2
-    cmp x0, #1
-    b.eq from_el1
-    b secondary_park
-
-from_el2:
-    mov x0, #(1 << 31)
-    msr hcr_el2, x0
-    msr cptr_el2, xzr
-    msr hstr_el2, xzr
-    msr sctlr_el1, xzr
-    mov x0, #0x3c5
-    msr spsr_el2, x0
-    adr x0, from_el1
-    msr elr_el2, x0
-    eret
-
-from_el1:
-    mrs x0, sctlr_el1
-    bic x0, x0, #(1 << 1)
-    msr sctlr_el1, x0
+primary_entry:
+    // Enable FP/SIMD on primary core
     mrs x0, cpacr_el1
     orr x0, x0, #(3 << 20)
     msr cpacr_el1, x0
     isb
 
-    adrp x0, __boot_stack_top
-    add x0, x0, :lo12:__boot_stack_top
-    mov sp, x0
-
-    adrp x1, __bss_start
-    add x1, x1, :lo12:__bss_start
-    adrp x2, __bss_end
-    add x2, x2, :lo12:__bss_end
-zero_bss:
-    cmp x1, x2
-    b.ge zero_bss_done
-    str xzr, [x1], #8
-    b zero_bss
-zero_bss_done:
-
+    // Store DTB pointer in dtb_phys_addr
     adrp x1, dtb_phys_addr
     add x1, x1, :lo12:dtb_phys_addr
     str x20, [x1]
 
+    // Call Rust kernel entry kmain(dtb_ptr)
+    mov x0, x20
     bl kmain
 
 hang:
     wfe
     b hang
-
-.section .text.exceptions
+.section .rodata
+.balign 4096
+.global early_level1_table
+.type early_level1_table, %object
+early_level1_table:
+    .quad 0x0000000000000705
+    .quad 0x0000000040000705
+    .quad 0
+    .quad 0x00600000c0000701
+    .fill 508, 8, 0
 .balign 0x800
 vector_table:
     // Current EL, SP0

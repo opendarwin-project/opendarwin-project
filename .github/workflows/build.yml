@@ -32,10 +32,6 @@ jobs:
 
       - uses: dtolnay/install-buck2@latest
 
-      - name: Install wild
-        run: tools/install-wild.sh "$HOME/.local/bin"
-
       - name: Build everything through the wild-linked toolchain
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
           buck2 build //...

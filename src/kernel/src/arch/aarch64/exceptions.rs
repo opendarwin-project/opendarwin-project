@@ -17,6 +17,14 @@ pub fn init() {
             addr = in(reg) addr,
             options(nomem, nostack)
         );
+        if cpu::current_el() == cpu::ExceptionLevel::El2 {
+            core::arch::asm!(
+                "msr vbar_el2, {addr}",
+                "isb",
+                addr = in(reg) addr,
+                options(nomem, nostack)
+            );
+        }
     }
 }
 
@@ -57,6 +65,7 @@ fn dump_frame(kind: &str, frame: &Frame) {
     print_labeled("  far_el1  = ", frame.far_el1);
     print_labeled("  spsr_el1 = ", frame.spsr_el1);
     print_labeled("  sp_el0   = ", frame.sp_el0);
+    print_labeled("  x29 (fp) = ", frame.x[29]);
     print_labeled("  x30 (lr) = ", frame.x[30]);
     print_labeled("  x0       = ", frame.x[0]);
     print_labeled("  x1       = ", frame.x[1]);
@@ -64,6 +73,32 @@ fn dump_frame(kind: &str, frame: &Frame) {
     print_labeled("  x3       = ", frame.x[3]);
     print_labeled("  x4       = ", frame.x[4]);
     print_labeled("  x5       = ", frame.x[5]);
+
+    uart::print("  backtrace:\n");
+    let mut n = 0u32;
+    cpu::walk_frames(frame.x[29], 16, |addr| {
+        uart::print("    #");
+        uart::print_dec(n as u64);
+        uart::print(" ");
+        uart::print_hex(addr);
+        uart::print("\n");
+        n += 1;
+    });
+
+    // Sealed hardware has no reachable UART, so the fault - including the
+    // backtrace - must also be legible on the display panel.
+    crate::drivers::display::print_panic("");
+    let mut dw = crate::DisplayWriter;
+    use core::fmt::Write;
+    let _ = write!(dw, "{} ({})\n", kind, ec_name(ec));
+    let _ = write!(dw, "elr={:#x}\n", frame.elr_el1);
+    let _ = write!(dw, "far={:#x}\n\n", frame.far_el1);
+    let _ = write!(dw, "backtrace:\n");
+    let mut n = 0u32;
+    cpu::walk_frames(frame.x[29], 12, |addr| {
+        let _ = write!(dw, "#{} {:#x}\n", n, addr);
+        n += 1;
+    });
 }
 
 fn print_labeled(label: &str, v: u64) {

@@ -176,10 +176,38 @@ pub const KERNEL_REGIONS: [Region; 3] = [
 ];
 
 unsafe extern "C" {
+    static _start: u8;
+    static __kernel_reserved_end: u8;
     static __userpages_start: u8;
     static __userpages_end: u8;
 }
 
+pub fn kernel_load_addr() -> u64 {
+    core::ptr::addr_of!(_start) as u64
+}
+
+pub fn kernel_reserved_end() -> u64 {
+    let addr = core::ptr::addr_of!(__kernel_reserved_end) as u64;
+    if addr != 0 {
+        addr
+    } else {
+        kernel_load_addr() + KERNEL_IMAGE_MAX_LEN
+    }
+}
+
+unsafe extern "C" {
+    static early_level1_table: u8;
+}
+
+pub fn prepare_superbird_el1_mmu() {
+    unsafe {
+        core::arch::asm!("msr mair_el1, {0}", in(reg) 0x0000_0000_0000_ff04u64, options(nomem, nostack));
+        core::arch::asm!("msr tcr_el1, {0}", in(reg) 0x0000_0002_0080_3519u64, options(nomem, nostack));
+        let ttbr0 = core::ptr::addr_of!(early_level1_table) as u64;
+        core::arch::asm!("msr ttbr0_el1, {0}", in(reg) ttbr0, options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
 static KERNEL_ROOT: Mutex<Table> = Mutex::new(Table::zeroed());
 
 const MAX_EXTRA_KERNEL_REGIONS: usize = 64;
@@ -373,6 +401,72 @@ pub fn enable(regions: &[Region]) {
             map_range(&mut root, r.pa, r.pa, r.len, r.prot);
         }
 
+        let extra = EXTRA_KERNEL_REGIONS.lock();
+        for i in 0..extra.count {
+            let r = &extra.regions[i];
+            map_range(&mut root, r.pa, r.pa, r.len, r.prot);
+        }
+        drop(extra);
+
+        if kernel_load_addr() == 0x0200_0000 {
+            let mmio_regions: &[(u64, u64)] = &[
+                (0xff63_c000, 0x2000),      // HHI
+                (0xff63_8000, 0x2000),      // DMC/canvas
+                (0xff80_0000, 0x1_0000),    // AO sysctrl & AO UART
+                (0xff63_4400, 0x1000),      // periphs pinctrl
+                (0xffd0_0000, 0x2_0000),    // CBUS reset & DSI & PWM
+                (0xff64_4000, 0x2000),      // DPHY
+                (0xff90_0000, 0x10_0000),   // VPU/VCBUS
+                (0xffc0_1000, 0x7000),      // GIC-400: distributor + CPU iface + VIC + VCPU
+                (0x1000_0000, 0x0100_0000), // Framebuffer DRAM window
+            ];
+            for &(pa, len) in mmio_regions {
+                // Register bases are sourced from datasheet offsets, not
+                // all of which land on a page boundary (e.g. the pinctrl
+                // block at 0xff63_4400 is only 1 KiB-aligned) - round out
+                // to whole pages so `map_range`'s alignment invariant holds.
+                let aligned_pa = pa & !(PAGE_SIZE - 1);
+                let aligned_end = (pa + len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                let is_device = aligned_pa >= 0xff00_0000;
+                map_range(
+                    &mut root,
+                    aligned_pa,
+                    aligned_pa,
+                    aligned_end - aligned_pa,
+                    Prot {
+                        writable: true,
+                        executable: false,
+                        user: false,
+                        device: is_device,
+                    },
+                );
+            }
+        } else if kernel_load_addr() == 0x4008_0000 {
+            map_range(
+                &mut root,
+                UART_BASE,
+                UART_BASE,
+                PAGE_SIZE,
+                Prot {
+                    writable: true,
+                    executable: false,
+                    user: false,
+                    device: true,
+                },
+            );
+            map_range(
+                &mut root,
+                GIC_DIST_BASE,
+                GIC_DIST_BASE,
+                GIC_MMIO_LEN,
+                Prot {
+                    writable: true,
+                    executable: false,
+                    user: false,
+                    device: true,
+                },
+            );
+        }
         let userpages_start = core::ptr::addr_of!(__userpages_start) as u64;
         let userpages_end = core::ptr::addr_of!(__userpages_end) as u64;
         if userpages_end > userpages_start {
@@ -390,7 +484,6 @@ pub fn enable(regions: &[Region]) {
             );
         }
     }
-
     enable_for_this_core();
 }
 

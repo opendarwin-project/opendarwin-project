@@ -222,13 +222,21 @@ pub fn register() {
     registry::register_driver(registry::DriverMatcher {
         class_name: CLASS_NAME,
         provider_class: PCI_CLASS_NAME,
-        match_fn: match_provider,
+        name_match: None,
+        compatible_match: None,
+        probe_score: 100,
+        match_fn: Some(match_provider),
+        probe_fn: None,
         attach_and_start,
     });
     registry::register_driver(registry::DriverMatcher {
         class_name: CLASS_NAME,
         provider_class: "IODisplayNub",
-        match_fn: match_provider,
+        name_match: None,
+        compatible_match: None,
+        probe_score: 50,
+        match_fn: Some(match_provider),
+        probe_fn: None,
         attach_and_start,
     });
 }
