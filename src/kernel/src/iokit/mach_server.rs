@@ -99,12 +99,13 @@ pub fn find_matching_service(class_name: &str) -> Option<*mut IOService> {
             if matches_class(&*svc, class_name) {
                 return Some(svc);
             }
-            for ci in 0..(*svc).entry.child_count {
-                if let Some(child_entry) = (*svc).entry.children[ci] {
-                    let child = IOService::from_entry(child_entry);
-                    if matches_class(&*child, class_name) {
-                        return Some(child);
-                    }
+            for &child_entry in (*svc)
+                .entry
+                .get_children(crate::iokit::registry_entry::gIOServicePlane)
+            {
+                let child = IOService::from_entry(child_entry);
+                if matches_class(&*child, class_name) {
+                    return Some(child);
                 }
             }
         }

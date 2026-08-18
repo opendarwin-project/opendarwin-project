@@ -1,40 +1,95 @@
-//! Base IORegistryEntry class: hierarchical tree and property tables.
+//! Base IORegistryEntry class: multi-plane hierarchical tree and rich OSObject properties.
+//!
+//! Mirrors Darwin IOKit/IORegistryEntry.h and libkern/c++/OS*.h:
+//! - Multi-plane registry: `gIOServicePlane`, `gIODTPlane`, `gIOPowerPlane`.
+//! - Structured properties: `OSObject` (String, Number, Data, Boolean, Array, Dictionary).
 
-use crate::iokit::types::{MAX_CHILDREN, MAX_PROPERTIES};
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 
-#[derive(Clone, Copy)]
-pub struct Property {
-    pub key: [u8; 32],
-    pub key_len: usize,
-    pub val_str: [u8; 64],
-    pub val_str_len: usize,
-    pub val_u64: u64,
-    pub is_str: bool,
-    pub in_use: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistryPlane {
+    Service = 0,
+    DeviceTree = 1,
+    Power = 2,
 }
 
-impl Property {
-    pub const fn empty() -> Self {
-        Self {
-            key: [0; 32],
-            key_len: 0,
-            val_str: [0; 64],
-            val_str_len: 0,
-            val_u64: 0,
-            is_str: false,
-            in_use: false,
+pub const NUM_PLANES: usize = 3;
+
+#[allow(non_upper_case_globals)]
+pub const gIOServicePlane: RegistryPlane = RegistryPlane::Service;
+#[allow(non_upper_case_globals)]
+pub const gIODTPlane: RegistryPlane = RegistryPlane::DeviceTree;
+#[allow(non_upper_case_globals)]
+pub const gIOPowerPlane: RegistryPlane = RegistryPlane::Power;
+
+/// Structured property value matching Darwin OSObject subclasses.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OSObject {
+    String(String),
+    Number(u64),
+    Data(Vec<u8>),
+    Boolean(bool),
+    Array(Vec<OSObject>),
+    Dictionary(BTreeMap<String, OSObject>),
+}
+
+impl OSObject {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            OSObject::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            OSObject::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            OSObject::Data(d) => Some(d.as_slice()),
+            OSObject::String(s) => Some(s.as_bytes()),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            OSObject::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&[OSObject]> {
+        match self {
+            OSObject::Array(arr) => Some(arr.as_slice()),
+            _ => None,
+        }
+    }
+
+    pub fn as_dict(&self) -> Option<&BTreeMap<String, OSObject>> {
+        match self {
+            OSObject::Dictionary(d) => Some(d),
+            _ => None,
         }
     }
 }
 
 pub struct IORegistryEntry {
-    pub name: [u8; 32],
-    pub name_len: usize,
-    pub parent: Option<*mut IORegistryEntry>,
-    pub children: [Option<*mut IORegistryEntry>; MAX_CHILDREN],
-    pub child_count: usize,
-    pub properties: [Property; MAX_PROPERTIES],
+    pub name: String,
+    pub location: String,
+    pub parents: [Option<*mut IORegistryEntry>; NUM_PLANES],
+    pub children: [Vec<*mut IORegistryEntry>; NUM_PLANES],
+    pub properties: BTreeMap<String, OSObject>,
 }
+
+unsafe impl Send for IORegistryEntry {}
+unsafe impl Sync for IORegistryEntry {}
 
 impl Default for IORegistryEntry {
     fn default() -> Self {
@@ -45,120 +100,138 @@ impl Default for IORegistryEntry {
 impl IORegistryEntry {
     pub const fn new() -> Self {
         Self {
-            name: [0; 32],
-            name_len: 0,
-            parent: None,
-            children: [None; MAX_CHILDREN],
-            child_count: 0,
-            properties: [Property::empty(); MAX_PROPERTIES],
+            name: String::new(),
+            location: String::new(),
+            parents: [None, None, None],
+            children: [Vec::new(), Vec::new(), Vec::new()],
+            properties: BTreeMap::new(),
         }
     }
 
     pub fn init(&mut self, name: &str) {
-        self.set_name(name);
-        self.parent = None;
-        self.child_count = 0;
-        for c in self.children.iter_mut() {
-            *c = None;
+        self.name = String::from(name);
+        self.location.clear();
+        self.parents = [None, None, None];
+        for c in &mut self.children {
+            c.clear();
         }
-        for p in self.properties.iter_mut() {
-            *p = Property::empty();
-        }
+        self.properties.clear();
     }
 
     pub fn get_name(&self) -> &str {
-        core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("")
+        &self.name
     }
 
     pub fn set_name(&mut self, name: &str) {
-        let n = name.len().min(self.name.len());
-        self.name[..n].copy_from_slice(&name.as_bytes()[..n]);
-        self.name_len = n;
+        self.name = String::from(name);
     }
 
-    pub fn add_child(&mut self, child: *mut IORegistryEntry) -> bool {
-        if self.child_count >= MAX_CHILDREN {
-            return false;
-        }
-        self.children[self.child_count] = Some(child);
-        self.child_count += 1;
+    pub fn get_location(&self) -> &str {
+        &self.location
+    }
+
+    pub fn set_location(&mut self, location: &str) {
+        self.location = String::from(location);
+    }
+
+    // --- Multi-Plane Hierarchy ---
+
+    pub fn attach_to_parent(&mut self, parent: *mut IORegistryEntry, plane: RegistryPlane) -> bool {
+        let plane_idx = plane as usize;
+        self.parents[plane_idx] = Some(parent);
         unsafe {
-            (*child).parent = Some(self as *mut IORegistryEntry);
+            let p = &mut *parent;
+            if !p.children[plane_idx].contains(&(self as *mut IORegistryEntry)) {
+                p.children[plane_idx].push(self as *mut IORegistryEntry);
+            }
         }
         true
     }
 
-    pub fn set_property_u64(&mut self, key: &str, val: u64) -> bool {
-        for p in self.properties.iter_mut() {
-            if p.in_use && p.key_len == key.len() && &p.key[..p.key_len] == key.as_bytes() {
-                p.val_u64 = val;
-                p.is_str = false;
-                return true;
+    pub fn detach_from_parent(&mut self, plane: RegistryPlane) -> bool {
+        let plane_idx = plane as usize;
+        if let Some(parent) = self.parents[plane_idx] {
+            unsafe {
+                let p = &mut *parent;
+                p.children[plane_idx].retain(|&c| c != (self as *mut IORegistryEntry));
             }
+            self.parents[plane_idx] = None;
+            true
+        } else {
+            false
         }
-        for p in self.properties.iter_mut() {
-            if !p.in_use {
-                let n = key.len().min(p.key.len());
-                p.key[..n].copy_from_slice(&key.as_bytes()[..n]);
-                p.key_len = n;
-                p.val_u64 = val;
-                p.is_str = false;
-                p.in_use = true;
-                return true;
-            }
-        }
-        false
     }
 
-    pub fn get_property_u64(&self, key: &str) -> Option<u64> {
-        for p in self.properties.iter() {
-            if p.in_use
-                && p.key_len == key.len()
-                && &p.key[..p.key_len] == key.as_bytes()
-                && !p.is_str
-            {
-                return Some(p.val_u64);
-            }
-        }
-        None
+    pub fn add_child(&mut self, child: *mut IORegistryEntry) -> bool {
+        self.add_child_in_plane(child, gIOServicePlane)
+    }
+
+    pub fn add_child_in_plane(
+        &mut self,
+        child: *mut IORegistryEntry,
+        plane: RegistryPlane,
+    ) -> bool {
+        unsafe { (*child).attach_to_parent(self as *mut IORegistryEntry, plane) }
+    }
+
+    pub fn get_parent(&self, plane: RegistryPlane) -> Option<*mut IORegistryEntry> {
+        self.parents[plane as usize]
+    }
+
+    pub fn get_children(&self, plane: RegistryPlane) -> &[*mut IORegistryEntry] {
+        &self.children[plane as usize]
+    }
+
+    // --- Property Table Access ---
+
+    pub fn set_property(&mut self, key: &str, obj: OSObject) {
+        self.properties.insert(String::from(key), obj);
+    }
+
+    pub fn get_property(&self, key: &str) -> Option<&OSObject> {
+        self.properties.get(key)
     }
 
     pub fn set_property_str(&mut self, key: &str, val: &str) -> bool {
-        for p in self.properties.iter_mut() {
-            if p.in_use && p.key_len == key.len() && &p.key[..p.key_len] == key.as_bytes() {
-                let vn = val.len().min(p.val_str.len());
-                p.val_str[..vn].copy_from_slice(&val.as_bytes()[..vn]);
-                p.val_str_len = vn;
-                p.is_str = true;
-                return true;
-            }
-        }
-        for p in self.properties.iter_mut() {
-            if !p.in_use {
-                let n = key.len().min(p.key.len());
-                p.key[..n].copy_from_slice(&key.as_bytes()[..n]);
-                p.key_len = n;
-                let vn = val.len().min(p.val_str.len());
-                p.val_str[..vn].copy_from_slice(&val.as_bytes()[..vn]);
-                p.val_str_len = vn;
-                p.is_str = true;
-                p.in_use = true;
-                return true;
-            }
-        }
-        false
+        self.properties
+            .insert(String::from(key), OSObject::String(String::from(val)));
+        true
     }
 
     pub fn get_property_str<'a>(&'a self, key: &str) -> Option<&'a str> {
-        for p in self.properties.iter() {
-            if p.in_use
-                && p.key_len == key.len()
-                && &p.key[..p.key_len] == key.as_bytes()
-                && p.is_str
-            {
-                return core::str::from_utf8(&p.val_str[..p.val_str_len]).ok();
-            }
-        }
-        None
+        self.properties.get(key).and_then(|obj| obj.as_str())
+    }
+
+    pub fn set_property_u64(&mut self, key: &str, val: u64) -> bool {
+        self.properties
+            .insert(String::from(key), OSObject::Number(val));
+        true
+    }
+
+    pub fn get_property_u64(&self, key: &str) -> Option<u64> {
+        self.properties.get(key).and_then(|obj| obj.as_u64())
+    }
+
+    pub fn set_property_bytes(&mut self, key: &str, bytes: &[u8]) {
+        self.properties
+            .insert(String::from(key), OSObject::Data(bytes.to_vec()));
+    }
+
+    pub fn get_property_bytes<'a>(&'a self, key: &str) -> Option<&'a [u8]> {
+        self.properties.get(key).and_then(|obj| obj.as_bytes())
+    }
+
+    pub fn set_property_bool(&mut self, key: &str, val: bool) {
+        self.properties
+            .insert(String::from(key), OSObject::Boolean(val));
+    }
+
+    pub fn get_property_bool(&self, key: &str) -> Option<bool> {
+        self.properties.get(key).and_then(|obj| obj.as_bool())
+    }
+
+    pub fn set_property_array(&mut self, key: &str, arr: Vec<OSObject>) {
+        self.properties
+            .insert(String::from(key), OSObject::Array(arr));
     }
 }

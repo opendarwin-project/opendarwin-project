@@ -11,7 +11,7 @@
 # `:kernel-lib`.
 rust_library(
     name = "kernel-lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["src/ramdisk.fat32.lz4"],
     crate = "kernel",
     crate_root = "src/lib.rs",
     default_target_platform = "root//platforms:kernel-aarch64",
@@ -36,6 +36,12 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+export_file(
+    name = "linker_script_meson",
+    src = "boot/linker-meson.ld",
+    visibility = ["PUBLIC"],
+)
+
 rust_binary(
     name = "kernel",
     srcs = ["src/main.rs"],
@@ -44,6 +50,23 @@ rust_binary(
     edition = "2024",
     linker_flags = [
         "-Wl,-T,$(location :linker_script)",
+    ],
+    deps = [
+        ":kernel-lib",
+        "//src/loader:loader",
+        "//src/vfs:vfs",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "kernel-meson",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    default_target_platform = "root//platforms:kernel-aarch64",
+    edition = "2024",
+    linker_flags = [
+        "-Wl,-T,$(location :linker_script_meson)",
     ],
     deps = [
         ":kernel-lib",
