@@ -1,0 +1,42 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+rust_binary(
+    name = "amlogic-boot",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:clap",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Raw ARM64 Linux "Image" binary (see boot/start.S's Image header) extracted
+# from the ELF via the hermetic `@llvm//tools:llvm-objcopy` - no system
+# objcopy install required. Loaded at 0x02000000 by both `ramboot` below and
+# the U-Boot boot.cmd script tools/build_superbird.sh generates.
+genrule(
+    name = "superbird_image",
+    srcs = ["//src/kernel:kernel-meson"],
+    outs = ["Image"],
+    cmd = "$(location @llvm//tools:llvm-objcopy) -O binary " +
+          "$(location //src/kernel:kernel-meson) $@",
+    tools = ["@llvm//tools:llvm-objcopy"],
+    visibility = ["//visibility:public"],
+)
+
+# `bazel run //tools/amlogic:ramboot -- [--dtb PATH]` USB RAM-boots a
+# Superbird (Amlogic Meson G12A) straight from a hermetic build, no
+# `target/superbird/` packaging step required.
+sh_binary(
+    name = "ramboot",
+    srcs = ["ramboot.sh"],
+    data = [
+        ":amlogic-boot",
+        ":superbird_image",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,16 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "metalc-host-test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/metalc/air-bitcode",
+        "//src/metalc/dialect-metal",
+        "//src/metalc/metal-lower",
+        "//src/metalc/metallib",
+        "@crates//:pliron",
+    ],
+    visibility = ["//visibility:public"],
+)

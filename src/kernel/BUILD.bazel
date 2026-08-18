@@ -1,0 +1,130 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("//platforms:transition.bzl", "exec_platform_file", "platform_binary")
+
+exports_files([
+    "boot/linker.ld",
+    "boot/linker-meson.ld",
+])
+
+# Embedded ramdisk rootfs (see src/kernel/src/ramdisk.rs): a minimal FAT32
+# image built by tools/make_fat32.py, lz4-compressed by tools/mkramdisk, and
+# linked into kernel-lib via `include_bytes!`. Boards with no removable
+# storage or virtio-blk device (Superbird chief among them) still get a
+# rootfs this way.
+#
+# Real Mach-O dylibs (libSystem.dylib, IOKit) aren't embedded yet: wild's
+# Mach-O support is executable-only (no MH_DYLIB output, see
+# src/userland/hello/BUILD.bazel), so `kmain.rs`'s dyld-style loader
+# (`spawn_zig_smoke_from_fat`, expecting a dynamically-linked `MAIN` plus its
+# `LC_LOAD_DYLIB` dependencies from the rootfs) has nothing to load yet, and
+# no `SampleKext.kext` bundle exists to back the `kext::load_bundle_from_fat`
+# call either - both currently fail harmlessly and are ignored by kmain.rs.
+# `hello` (statically linking libsystem + iokit) is embedded instead, as a
+# real Mach-O executable proving those crates' compiled output.
+genrule(
+    name = "ramdisk_fat32",
+    srcs = [
+        "ramdisk/HELLO.TXT",
+        "//src/userland/hello:hello",
+        "//tools:make_fat32.py",
+    ],
+    outs = ["ramdisk.fat32.img"],
+    cmd = "$(PYTHON3) $(location //tools:make_fat32.py) $@ --multi " +
+          "HELLO.TXT=$(location ramdisk/HELLO.TXT) " +
+          "hello=$(location //src/userland/hello:hello)",
+    toolchains = ["@rules_python//python:current_py_toolchain"],
+)
+
+genrule(
+    name = "ramdisk_lz4",
+    srcs = [":ramdisk_fat32"],
+    outs = ["src/ramdisk.fat32.lz4"],
+    cmd = "$(location //tools/mkramdisk) $(location :ramdisk_fat32) $@",
+    tools = ["//tools/mkramdisk"],
+)
+
+# kernel-lib is transitioned to aarch64-unknown-none by the `kernel`/
+# `kernel-meson` binaries (see platform_binary below); without this, the
+# ramdisk genrules above would inherit that freestanding target platform too
+# and fail to resolve a build-time Python toolchain for it.
+exec_platform_file(
+    name = "ramdisk_lz4_host",
+    actual = ":ramdisk_lz4",
+)
+
+rust_library(
+    name = "kernel-lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    compile_data = [
+        ":ramdisk_lz4_host",
+    ],
+    crate_name = "kernel",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    tags = ["manual"],
+    deps = [
+        "//src/vfs",
+        "@crates//:aarch64-cpu",
+        "@crates//:aarch64-paging",
+        "@crates//:arm-gic",
+        "@crates//:lz4rip",
+        "@crates//:object",
+        "@crates//:safe-mmio",
+        "@crates//:spin",
+        "@crates//:virtio-drivers",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "_kernel",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    compile_data = ["boot/linker.ld"],
+    edition = "2024",
+    rustc_flags = [
+        "-Cpanic=abort",
+        "-Clink-args=-nostartfiles -nostdlib++",
+        "-Clink-arg=-Wl,-T,$(location boot/linker.ld)",
+    ],
+    tags = ["manual"],
+    deps = [
+        ":kernel-lib",
+        "//src/loader",
+        "//src/vfs",
+    ],
+)
+
+platform_binary(
+    name = "kernel",
+    platform = "//platforms:kernel-aarch64",
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "_kernel-meson",
+    srcs = ["src/main.rs"],
+    compile_data = ["boot/linker-meson.ld"],
+    edition = "2024",
+    rustc_flags = [
+        "-Cpanic=abort",
+        "-Clink-args=-nostartfiles -nostdlib++",
+        "-Clink-arg=-Wl,-T,$(location boot/linker-meson.ld)",
+    ],
+    tags = ["manual"],
+    deps = [
+        ":kernel-lib",
+        "//src/loader",
+        "//src/vfs",
+    ],
+)
+
+platform_binary(
+    name = "kernel-meson",
+    platform = "//platforms:kernel-aarch64",
+    visibility = ["//visibility:public"],
+)

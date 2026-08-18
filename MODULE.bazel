@@ -1,0 +1,75 @@
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "llvm", version = "0.7.3")
+bazel_dep(name = "rules_rs", version = "0.0.106")
+bazel_dep(name = "rules_python", version = "2.3.1")
+bazel_dep(name = "rules_qemu", version = "0.3.0")
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+single_version_override(
+    module_name = "rules_rs",
+    patch_strip = 0,
+    patches = ["//patches:rules_rs_no_std_features.patch"],
+)
+
+git_override(
+    module_name = "llvm",
+    commit = "3f832a61fbe3e10792c5a3ed8c126b54553b613f",
+    remote = "https://github.com/tinted-software/hermetic-llvm",
+)
+
+# Deliberately not wiring `@llvm//extensions:osx.bzl`'s `osx` extension: it
+# fetches the Xcode/macOS SDK (`@macos_sdk`) on demand for `-lSystem` and
+# `-isysroot`. Darwin userland links statically against our own
+# src/libsystem instead (see src/libsystem/BUILD.bazel), and macOS targets
+# are cross-linked with wild from the Linux exec toolchain, so no build in
+# this repo touches `@macos_sdk`. Do not add the `osx` extension without
+# also auditing which targets would start depending on Apple's SDK.
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
+
+toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+toolchains.toolchain(
+    edition = "2024",
+    version = "1.97.1",
+)
+use_repo(toolchains, "default_rust_toolchains")
+
+# Hermetic qemu-system-aarch64 + qemu-img for tools/qemu:kernel (boots
+# src/kernel:kernel under QEMU's aarch64 `virt` machine without depending on
+# a system QEMU install). See platforms/qemu/BUILD.bazel for the guest
+# selector flag this toolchain's `target_settings` matches against.
+qemu = use_extension("@rules_qemu//qemu/extension:qemu.bzl", "qemu")
+qemu.system_toolchain(
+    system_target = "aarch64-softmmu",
+    target_settings = ["//platforms/qemu:aarch64"],
+)
+use_repo(qemu, "qemu_system_toolchains", "qemu_user_toolchains")
+
+register_toolchains("@qemu_system_toolchains//:all")
+
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+register_toolchains(
+    "@default_rust_toolchains//...",
+    "@llvm//toolchain:all",
+)
+
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lock = "//third_party:Cargo.lock",
+    cargo_toml = "//third_party:Cargo.toml",
+    platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-none",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates")

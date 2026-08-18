@@ -1,7 +1,0 @@
-buildscript.run = true
-cargo_env = ["CARGO_PKG_VERSION_PATCH"]
-
-# See fixups/memchr/fixups.toml: scope the no_std override to the
-# freestanding kernel platform only.
-["cfg(target_os = \"none\")"]
-omit_features = ["std"]

@@ -8,6 +8,9 @@
 #   target/superbird/Image          Raw ARM64 Linux Image binary (load at 0x02000000)
 #   target/superbird/boot.cmd        U-Boot boot source script
 #   target/superbird/README.txt      Flashing & boot instructions
+#
+# For USB RAM-boot without any of the above packaging, prefer:
+#   bazel run //tools/amlogic:ramboot -- [--dtb PATH]
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,24 +37,12 @@ done
 out_dir="target/superbird"
 mkdir -p "$out_dir"
 
-echo "==> Building OpenDarwin kernel for Meson G12A..."
-kernel_elf="$(buck2 build //src/kernel:kernel-meson --show-simple-output)"
-echo "==> ELF: $kernel_elf"
-
-objcopy_bin=""
-if command -v llvm-objcopy >/dev/null 2>&1; then
-    objcopy_bin="llvm-objcopy"
-elif command -v aarch64-linux-gnu-objcopy >/dev/null 2>&1; then
-    objcopy_bin="aarch64-linux-gnu-objcopy"
-elif command -v objcopy >/dev/null 2>&1; then
-    objcopy_bin="objcopy"
-else
-    echo "ERROR: no suitable objcopy tool found" >&2
-    exit 1
-fi
-
-echo "==> Extracting raw ARM64 Image with $objcopy_bin..."
-"$objcopy_bin" -O binary "$kernel_elf" "$out_dir/Image"
+echo "==> Building OpenDarwin kernel Image for Meson G12A (hermetic llvm-objcopy)..."
+bazel build //tools/amlogic:superbird_image >&2
+image="$(bazel cquery //tools/amlogic:superbird_image --output=files 2>/dev/null)"
+cp "$image" "$out_dir/Image"
+chmod +w "$out_dir/Image"
+echo "==> Image: $out_dir/Image"
 
 cat << 'EOF' > "$out_dir/boot.cmd"
 # OpenDarwin Superbird U-Boot Boot Script
@@ -76,9 +67,9 @@ OpenDarwin on Spotify Car Thing (Amlogic Meson G12A / Superbird)
 ================================================================
 
 1. USB RAM-boot without flashing (recommended for testing):
+     bazel run //tools/amlogic:ramboot -- [--dtb path/to/meson-g12a-superbird.dtb]
+   Or via this packaging script:
      ./tools/build_superbird.sh --boot [--dtb path/to/meson-g12a-superbird.dtb]
-   Or using the native Rust host tool directly:
-     buck2 run //tools/amlogic:amlogic-boot -- ramboot --image target/superbird/Image
 
 2. SD card / USB Flash Drive boot:
      Copy `Image` (and `meson-g12a-superbird.dtb`) to the root of a FAT32-formatted USB drive.
@@ -99,14 +90,10 @@ EOF
 echo "==> Build complete: $out_dir/Image ($(stat -c%s "$out_dir/Image" 2>/dev/null || stat -f%z "$out_dir/Image") bytes)"
 
 if [ "$do_boot" -eq 1 ]; then
-    echo "==> Building native amlogic-boot tool..."
-    boot_bin="$(buck2 build //tools/amlogic:amlogic-boot --show-simple-output)"
-    
-    boot_args=(ramboot --image "$out_dir/Image")
+    boot_args=()
     if [ -n "$dtb_arg" ]; then
         boot_args+=(--dtb "$dtb_arg")
     fi
-    
     echo "==> Initiating RAM-boot over USB..."
-    exec "$boot_bin" "${boot_args[@]}"
+    exec bazel run //tools/amlogic:ramboot -- "${boot_args[@]}"
 fi

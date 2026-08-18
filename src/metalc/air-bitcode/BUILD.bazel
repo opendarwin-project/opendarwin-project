@@ -1,0 +1,15 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "air-bitcode",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/metalc/metallib",
+        "@crates//:anyhow",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+    ],
+    visibility = ["//visibility:public"],
+)

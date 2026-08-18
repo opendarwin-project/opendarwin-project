@@ -1,0 +1,32 @@
+platform(
+    name = "local_gnu",
+    parents = ["@platforms//host"],
+    constraint_values = [
+        "@llvm//constraints/libc:gnu.2.28",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "local_windows_msvc",
+    parents = ["@platforms//host"],
+    constraint_values = [
+        "@llvm//constraints/windows/abi:msvc",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "kernel-aarch64",
+    parents = ["@llvm//platforms:none_aarch64"],
+    constraint_values = [
+        "@llvm//constraints/fpu:neon",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "macos-arm64",
+    parents = ["@llvm//platforms:macos_aarch64"],
+    visibility = ["//visibility:public"],
+)

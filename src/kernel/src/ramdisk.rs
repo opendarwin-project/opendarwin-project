@@ -1,8 +1,9 @@
 //! Embedded ramdisk rootfs: a minimal FAT32 image, `lz4rip`-compressed and
-//! linked straight into the kernel binary (`ramdisk.fat32.lz4`, rebuilt via
-//! `tools/build_ramdisk.sh`), so boards with no removable storage or
-//! virtio-blk device - the Superbird chief among them - still get a rootfs
-//! for `kext`/dylib loading.
+//! linked straight into the kernel binary. Built by Bazel
+//! (`//src/kernel:ramdisk_fat32` + `:ramdisk_lz4`, see src/kernel/BUILD.bazel)
+//! from tools/make_fat32.py + tools/mkramdisk, so boards with no removable
+//! storage or virtio-blk device - the Superbird chief among them - still
+//! get a rootfs for `kext`/dylib loading.
 //!
 //! Decompressed once into a heap buffer at boot and exposed to
 //! `vfs::fat` through the same [`vfs::BlockReader`] contract virtio-blk
@@ -13,7 +14,8 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 /// `[8-byte LE original length][lz4rip-compressed payload]`, produced by
-/// `tools/mkramdisk` - see `tools/build_ramdisk.sh`.
+/// `//tools/mkramdisk` - see `//src/kernel:ramdisk_lz4` in
+/// src/kernel/BUILD.bazel.
 static RAMDISK_LZ4: &[u8] = include_bytes!("ramdisk.fat32.lz4");
 
 const SECTOR_SIZE: usize = 512;

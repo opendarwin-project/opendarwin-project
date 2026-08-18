@@ -1,0 +1,23 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+load("//platforms:transition.bzl", "platform_binary")
+
+rust_binary(
+    name = "_hello",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    rustc_flags = [
+        "-Cpanic=abort",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//src/iokit",
+        "//src/libsystem",
+    ],
+)
+
+platform_binary(
+    name = "hello",
+    platform = "//platforms:macos-arm64",
+    visibility = ["//visibility:public"],
+)

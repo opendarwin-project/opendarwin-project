@@ -27,10 +27,6 @@
 
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 #![allow(unsafe_op_in_unsafe_fn)]
-#![allow(
-    invalid_runtime_symbol_definitions,
-    suspicious_runtime_symbol_definitions
-)]
 #![no_std]
 
 #[cfg(test)]

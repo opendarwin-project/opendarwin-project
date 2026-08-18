@@ -1,0 +1,39 @@
+# The real crate output is a `cdylib` (System) meant for the Darwin userland
+# targets built by tools/build_frameworks.sh with -Zbuild-std against
+# aarch64-apple-darwin/arm64e-apple-darwin. Until wild gains MH_DYLIB output
+# (see src/userland/hello/BUILD.bazel), userland links statically instead, so
+# `:libsystem-static` builds the crate as a `staticlib` for that linkage; a
+# `cdylib` variant lands once dylib linking is supported.
+#
+# `:libsystem` (an rlib) is the crate consumed by other first-party Rust
+# crates (e.g. src/userland/hello) and by `buck2 build`/typecheck coverage;
+# it is not itself a shipped artifact.
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("@rules_rs//rs:rust_static_library.bzl", "rust_static_library")
+
+rust_library(
+    name = "libsystem",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "System",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "@crates//:spin",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_static_library(
+    name = "libsystem-static",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "System",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = [
+        "-Cpanic=abort",
+    ],
+    deps = [
+        "@crates//:spin",
+    ],
+    visibility = ["//visibility:public"],
+)

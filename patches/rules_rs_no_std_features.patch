@@ -1,0 +1,17 @@
+--- rs/private/repository_utils.bzl
++++ rs/private/repository_utils.bzl
+@@ -212,9 +212,13 @@
+ def render_rust_crate_call(attr, values, bazel_metadata = {}, extra_deps = "", indent = "", skip_deps_verification = False):
+     # We keep conditional_crate_features unrendered here because it must be treated specially for build scripts.
+     # See `rs/private/rust_crate.bzl` for details.
++    crate_features_select = {
++        platform: [f for f in features if not (platform.endswith("-none") and f == "std")]
++        for platform, features in attr.crate_features_select.items()
++    }
+     crate_features, conditional_crate_features = compute_select(
+         _exclude_deps_from_features(attr.crate_features),
+-        {platform: _exclude_deps_from_features(features) for platform, features in attr.crate_features_select.items()},
++        {platform: _exclude_deps_from_features(features) for platform, features in crate_features_select.items()},
+     )
+     use_legacy_rules_rust_platforms = attr.use_legacy_rules_rust_platforms
+     build_deps, conditional_build_deps = render_select(attr.build_script_deps, attr.build_script_deps_select, use_legacy_rules_rust_platforms)

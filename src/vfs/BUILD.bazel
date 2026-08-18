@@ -1,0 +1,13 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "vfs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "vfs",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "@crates//:spin",
+    ],
+    visibility = ["//visibility:public"],
+)

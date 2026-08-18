@@ -1,0 +1,16 @@
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+
+rust_library(
+    name = "metal-lower",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/metalc/air-bitcode",
+        "//src/metalc/dialect-air",
+        "//src/metalc/dialect-metal",
+        "@crates//:pliron",
+        "@crates//:thiserror",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -1,7 +1,0 @@
-# Every dependent in this workspace resolves to one unified `std` feature
-# state normally; the freestanding kernel (target_os = "none") is the one
-# real exception, so scope the override to that platform instead of
-# omit_features globally (which broke aho-corasick's use of memchr's
-# std-gated `Finder::into_owned` for host builds).
-["cfg(target_os = \"none\")"]
-omit_features = ["std"]

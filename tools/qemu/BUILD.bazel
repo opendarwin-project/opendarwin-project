@@ -1,0 +1,10 @@
+load(":qemu_boot.bzl", "qemu_boot")
+
+# `bazel run //tools/qemu:kernel -- [-d ROOTFS_IMG] [-g] [-- QEMU_ARGS...]`
+# boots //src/kernel:kernel under a hermetic qemu-system-aarch64 `virt`
+# machine (see qemu_boot.sh.tpl for flag docs and boot-protocol notes).
+qemu_boot(
+    name = "kernel",
+    kernel = "//src/kernel:kernel",
+    visibility = ["//visibility:public"],
+)

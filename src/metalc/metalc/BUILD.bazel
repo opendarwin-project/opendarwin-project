@@ -1,0 +1,21 @@
+load("@rules_rs//rs:rust_binary.bzl", "rust_binary")
+
+rust_binary(
+    name = "metalc",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        "//src/metalc/air-bitcode",
+        "//src/metalc/dialect-air",
+        "//src/metalc/dialect-metal",
+        "//src/metalc/metal-lower",
+        "//src/metalc/metal-transforms",
+        "//src/metalc/metallib",
+        "//src/metalc/msl-frontend",
+        "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:pliron",
+    ],
+    visibility = ["//visibility:public"],
+)

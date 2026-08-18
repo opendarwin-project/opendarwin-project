@@ -1,0 +1,3 @@
+Hello from the OpenDarwin embedded ramdisk!
+This FAT32 image was compressed with lz4rip and linked directly
+into the kernel binary - no removable storage or virtio-blk needed.

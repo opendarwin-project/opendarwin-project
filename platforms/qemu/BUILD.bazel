@@ -1,0 +1,16 @@
+load(":qemu_system_target.bzl", "qemu_system_target")
+
+# Selects the `rules_qemu` system-mode guest toolchain registered in
+# MODULE.bazel. Defaults (and, today, is pinned) to aarch64 for
+# //src/kernel:kernel's QEMU `virt`-machine target; see tools/qemu/BUILD.bazel.
+qemu_system_target(
+    name = "qemu_system_target",
+    build_setting_default = "aarch64",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aarch64",
+    flag_values = {":qemu_system_target": "aarch64"},
+    visibility = ["//visibility:public"],
+)

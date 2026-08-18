@@ -249,9 +249,9 @@ pub fn discover() -> Option<Found> {
                     }
                 }
 
-                if (current_node_name.starts_with("pl011")
+                if current_node_name.starts_with("pl011")
                     || current_node_name.starts_with("uart@")
-                    || current_node_name.starts_with("serial@"))
+                    || current_node_name.starts_with("serial@")
                 {
                     if prop_name == "compatible" {
                         if let Ok(comp) = core::str::from_utf8(prop_val) {
