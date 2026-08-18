@@ -5,6 +5,7 @@ pub mod framebuffer;
 pub mod mach_server;
 pub mod memory;
 pub mod pci_device;
+pub mod platform_device;
 pub mod registry;
 pub mod registry_entry;
 pub mod root;

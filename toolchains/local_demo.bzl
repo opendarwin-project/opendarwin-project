@@ -1,12 +1,3 @@
-# Copy of @prelude//toolchains:demo.bzl's `system_demo_toolchains()`, minus
-# its `cxx`/`rust` toolchain registrations (toolchains/BUCK declares its own
-# `:cxx`, using our vendored mold as the linker, and its own `:rust`, which
-# selects a freestanding `aarch64-unknown-none` triple for the kernel) and
-# everything Android-specific (android/dex/kotlin_for_android/
-# java_for_android), which this workspace has no use for. Per that macro's
-# own docstring: "Most real projects should copy/paste the implementation to
-# configure them."
-
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load("@prelude//toolchains:dex.bzl", "system_noop_dex_toolchain")
 load("@prelude//toolchains:erlang.bzl", "system_erlang_toolchain")

@@ -1,5 +1,7 @@
 //! Base IOService class matching Darwin IOKit/IOService.h.
 
+use alloc::string::String;
+
 use crate::iokit::registry_entry::IORegistryEntry;
 use crate::iokit::types::{IO_RETURN_SUCCESS, IOReturn};
 
@@ -12,11 +14,13 @@ pub struct IOServiceVtable {
 
 pub struct IOService {
     pub entry: IORegistryEntry,
-    pub class_name: [u8; 32],
-    pub class_name_len: usize,
+    pub class_name: String,
     pub provider: Option<*mut IOService>,
     pub vtable: Option<&'static IOServiceVtable>,
 }
+
+unsafe impl Send for IOService {}
+unsafe impl Sync for IOService {}
 
 impl Default for IOService {
     fn default() -> Self {
@@ -28,27 +32,26 @@ impl IOService {
     pub const fn new() -> Self {
         Self {
             entry: IORegistryEntry::new(),
-            class_name: [0; 32],
-            class_name_len: 0,
+            class_name: String::new(),
             provider: None,
             vtable: None,
         }
     }
 
-    pub fn init(&mut self, class_name: &str, name: &str, _location: &str) {
+    pub fn init(&mut self, class_name: &str, name: &str, location: &str) {
         self.entry.init(name);
+        self.entry.set_location(location);
         self.set_class_name(class_name);
+        self.entry.set_property_str("IOClass", class_name);
         self.provider = None;
     }
 
     pub fn get_class_name(&self) -> &str {
-        core::str::from_utf8(&self.class_name[..self.class_name_len]).unwrap_or("")
+        &self.class_name
     }
 
     pub fn set_class_name(&mut self, class_name: &str) {
-        let n = class_name.len().min(self.class_name.len());
-        self.class_name[..n].copy_from_slice(&class_name.as_bytes()[..n]);
-        self.class_name_len = n;
+        self.class_name = String::from(class_name);
     }
 
     pub fn attach_to_provider(&mut self, provider: *mut IOService) -> bool {

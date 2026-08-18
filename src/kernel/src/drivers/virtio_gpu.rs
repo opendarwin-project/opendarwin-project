@@ -169,12 +169,18 @@ pub fn setup_scanout() -> bool {
             pmm::free_pages(pa, pages);
             continue;
         }
-
         gpu.scanout_pa = pa;
         gpu.scanout_len = pages * PAGE_SIZE;
         gpu.scanout_w = w;
         gpu.scanout_h = h;
         gpu.scanout_ready = true;
+        crate::drivers::display::configure_manual(
+            pa as usize,
+            (w * 4) as usize,
+            w as usize,
+            h as usize,
+            crate::drivers::display::PixelFormat::Xrgb8888,
+        );
         return true;
     }
 

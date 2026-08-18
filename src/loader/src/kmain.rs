@@ -3,10 +3,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use kernel::arch::aarch64::cpu;
 use kernel::arch::aarch64::exceptions;
 use kernel::arch::aarch64::pac;
 use kernel::devicetree;
-use kernel::drivers::{gic, timer, uart, virtio_blk, virtio_gpu};
+use kernel::drivers::{display, gic, timer, uart, virtio_blk, virtio_gpu};
 use kernel::iokit;
 use kernel::ipc;
 use kernel::mm::mmu::{self, PAGE_SIZE, Prot, Region};
@@ -216,34 +217,100 @@ fn spawn_zig_smoke_from_fat() -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kmain() -> ! {
-    exceptions::init();
-    uart::init(0x0900_0000);
+pub extern "C" fn kmain(dtb_arg: u64) -> ! {
+    if mmu::kernel_load_addr() == 0x0200_0000 {
+        display::early_marker();
 
-    uart::print("\n\n========================================\n");
+        // Install VBAR_EL1/VBAR_EL2 before touching any EL2 system register:
+        // an unhandled exception during the MMU/HCR/SPSR setup below would
+        // otherwise hit whatever vector U-Boot/BL31 left in VBAR_EL2 (usually
+        // a silent reset back to the boot ROM) instead of our red fault
+        // screen.
+        exceptions::init();
+
+        if cpu::current_el() == cpu::ExceptionLevel::El2 {
+            mmu::prepare_superbird_el1_mmu();
+            let sp: usize;
+            unsafe {
+                core::arch::asm!("mov {0}, sp", out(reg) sp, options(nomem, nostack));
+                cpu::drop_to_el1(el1_kmain as usize, sp, dtb_arg as usize, cpu::SCTLR_EL1_MMU_ENABLED);
+            }
+        }
+    }
+
+    el1_kmain(dtb_arg);
+}
+
+fn el1_kmain(_dtb_arg: u64) -> ! {
+    exceptions::init();
+    // The Superbird's UART pads are unreachable without disassembling the
+    // unit, but `uart_AO` (0xff80_3000) is still the board console TF-A/
+    // U-Boot already configured; QEMU's PL011 lives at 0x0900_0000 and
+    // doesn't exist on real silicon, so probing it there would stall on a
+    // bus access to a nonexistent device with no fault to catch.
+    uart::init(if mmu::kernel_load_addr() == 0x0200_0000 { 0xff80_3000 } else { 0x0900_0000 });
+    display::init_early();
+    display::mark_stage(display::BootStage::Bootstrap);
     uart::print("   OpenDarwin Kernel (AArch64)\n");
     uart::print("========================================\n\n");
 
     let dtb_found = devicetree::discover();
-
-    let (ram_base, ram_size) = if let Some(found) = &dtb_found {
-        (found.memory_base.unwrap_or(0x4000_0000), found.memory_size.unwrap_or(1024 * 1024 * 1024))
+    let (default_ram_base, default_ram_size) = if mmu::kernel_load_addr() == 0x0200_0000 {
+        (0x0000_0000, 512 * 1024 * 1024)
     } else {
         (0x4000_0000, 1024 * 1024 * 1024)
     };
-
-    let kernel_end = mmu::KERNEL_LOAD_ADDR + mmu::KERNEL_IMAGE_MAX_LEN + 0x10_0000;
+    let (ram_base, ram_size) = if let Some(found) = &dtb_found {
+        (found.memory_base.unwrap_or(default_ram_base), found.memory_size.unwrap_or(default_ram_size))
+    } else {
+        (default_ram_base, default_ram_size)
+    };
+    let kernel_load = mmu::kernel_load_addr();
+    let kernel_end = mmu::kernel_reserved_end();
     let free_start = (kernel_end + 0x10_0000 - 1) & !(0x10_0000 - 1);
     let free_size = ram_size.saturating_sub(free_start.saturating_sub(ram_base));
 
-    let mem_region = pmm::MemoryRegion {
-        base: free_start,
-        size: free_size,
+    let mem_regions = if kernel_load == 0x0200_0000 {
+        // Superbird: reserve 2MB at 0x1000_0000 for scanout buffer
+        [
+            pmm::MemoryRegion {
+                base: free_start,
+                size: (0x1000_0000u64).saturating_sub(free_start),
+            },
+            pmm::MemoryRegion {
+                base: 0x1020_0000,
+                size: (0x2000_0000u64).saturating_sub(0x1020_0000),
+            },
+        ]
+    } else {
+        [
+            pmm::MemoryRegion {
+                base: free_start,
+                size: free_size,
+            },
+            pmm::MemoryRegion {
+                base: 0,
+                size: 0,
+            },
+        ]
     };
-    pmm::init(&[mem_region]);
-    mmu::enable(&mmu::KERNEL_REGIONS);
+    let active_regions = if mem_regions[1].size > 0 { &mem_regions[..] } else { &mem_regions[0..1] };
+    pmm::init(active_regions);
+    let kernel_region = mmu::Region {
+        pa: kernel_load,
+        len: mmu::KERNEL_IMAGE_MAX_LEN,
+        prot: mmu::Prot {
+            writable: true,
+            executable: true,
+            user: false,
+            device: false,
+        },
+        _pad: 0,
+    };
+    mmu::enable(&[kernel_region]);
     mmu::set_page_allocator(|| pmm::alloc_pages_contig(1));
     slab::init();
+    display::mark_stage(display::BootStage::MemoryReady);
 
     let mut rootfs_mounted = false;
     if let Some(found) = &dtb_found {
@@ -261,8 +328,18 @@ pub extern "C" fn kmain() -> ! {
 
         virtio_gpu::init(&found.virtio_gpu_matches[..found.virtio_gpu_count], found.pci_ecam_base);
 
-        if let (Some(dist), Some(cpu)) = (found.gic_dist_base, found.gic_cpu_base) {
-            gic::set_bases(dist, cpu);
+        if found.has_amlogic_vpu {
+            display::init_amlogic_vpu(display::VPU_BASE, display::CANVAS_BASE);
+        }
+
+        if let Some(dist) = found.gic_dist_base {
+            if found.gic_version == gic::GicVersion::V3 {
+                if let Some(redist) = found.gic_redist_base {
+                    gic::set_v3_bases(dist, redist);
+                }
+            } else if let Some(cpu) = found.gic_cpu_base {
+                gic::set_bases(dist, cpu);
+            }
         }
     } else {
         uart::print("opendarwin: devicetree discovery failed, using fallback bootstrap\n");
@@ -274,16 +351,62 @@ pub extern "C" fn kmain() -> ! {
         }
     }
 
+    if !rootfs_mounted {
+        // No block device (real hardware with no removable storage, or
+        // QEMU without `-d`): fall back to the FAT32 image linked into the
+        // kernel binary (`kernel::ramdisk`, `tools/build_ramdisk.sh`).
+        if kernel::ramdisk::mount() {
+            uart::print("opendarwin: mounted embedded ramdisk root filesystem\n");
+            rootfs_mounted = true;
+        } else {
+            uart::print("opendarwin: failed to mount embedded ramdisk\n");
+        }
+    }
+
+    // The Superbird has no DTB in RAM-boot mode (`dtb_found` is always
+    // `None` here), but its interrupt controller is a fixed part of the
+    // silicon layout: GIC-400 (GICv2-architecture MMIO interface, *not*
+    // GICv3 system registers) at GICD 0xffc0_1000 / GICC 0xffc0_2000 (see
+    // `gic` module docs) - unlike QEMU's `virt` GICv2, which is always
+    // discovered from the DTB. Without this, `gic::init()` would fall back
+    // to QEMU's bootstrap GICv2 distributor address, which doesn't exist on
+    // real silicon and faults.
+    if mmu::kernel_load_addr() == 0x0200_0000 && dtb_found.is_none() {
+        gic::set_bases(gic::AMLOGIC_DIST_BASE, gic::AMLOGIC_CPU_BASE);
+    }
     gic::init();
     gic::enable(timer::IRQ);
     timer::init(10);
+    display::mark_stage(display::BootStage::DeviceTreeReady);
     ipc::init_ipc();
     iokit::init_iokit();
+    if let Some(found) = &dtb_found {
+        if found.has_amlogic_vpu {
+            iokit::root::publish_platform_device(
+                "vpu",
+                "ff900000",
+                &["amlogic,meson-g12a-vpu", "amlogic,meson-vpu"],
+                &[(0xff90_0000, 0x10_0000), (0xff63_8000, 0x2000)],
+                &[],
+            );
+        }
+    }
+    iokit::match_and_start_drivers();
+    display::mark_stage(display::BootStage::IokitReady);
     if pac::available() {
-        pac::enable();
     }
 
     if rootfs_mounted {
+        let mut hello_buf = [0u8; 256];
+        if let Some(n) = vfs::read_fat_file("HELLO.TXT", &mut hello_buf) {
+            uart::print("opendarwin: HELLO.TXT (");
+            uart::print_dec(n as u64);
+            uart::print(" bytes): ");
+            uart::print_bytes(&hello_buf[..n]);
+        } else {
+            uart::print("opendarwin: HELLO.TXT read failed\n");
+        }
+
         kext::load_bundle_from_fat("SampleKext.kext");
         let _ = spawn_zig_smoke_from_fat();
     }
@@ -291,6 +414,7 @@ pub extern "C" fn kmain() -> ! {
     smp::wake_secondaries();
     kernel::arch::aarch64::cpu::unmask_irq();
 
+    display::mark_stage(display::BootStage::Running);
     uart::print("opendarwin: starting scheduler on core 0\n");
     sched::run_core(0);
 }

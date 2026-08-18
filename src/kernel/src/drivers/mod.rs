@@ -1,3 +1,4 @@
+pub mod display;
 pub mod gic;
 pub mod psci;
 pub mod timer;

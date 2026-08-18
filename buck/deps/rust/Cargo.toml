@@ -29,6 +29,7 @@ object = { version = "0.40.0", default-features = false, features = ["read_core"
 hadris-fat = { version = "2.0.0", default-features = false }
 hadris-io = { version = "2.0.0", default-features = false }
 awint = "0.17"
+nusb = "0.2.7"
 
 [profile.release]
 panic = "abort"

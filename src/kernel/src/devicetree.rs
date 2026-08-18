@@ -14,8 +14,11 @@ const DTB_MAP_WINDOW: u64 = 0x10_0000; // 1 MB
 #[derive(Clone, Copy)]
 pub struct Found {
     pub uart_base: Option<u64>,
+    pub gic_version: crate::drivers::gic::GicVersion,
     pub gic_dist_base: Option<u64>,
     pub gic_cpu_base: Option<u64>,
+    pub gic_redist_base: Option<u64>,
+    pub has_amlogic_vpu: bool,
     pub memory_base: Option<u64>,
     pub memory_size: Option<u64>,
     pub virtio_blk_matches: [Info; MAX_VIRTIO_CANDIDATES],
@@ -29,8 +32,11 @@ impl Default for Found {
     fn default() -> Self {
         Self {
             uart_base: None,
+            gic_version: crate::drivers::gic::GicVersion::V2,
             gic_dist_base: None,
             gic_cpu_base: None,
+            gic_redist_base: None,
+            has_amlogic_vpu: false,
             memory_base: None,
             memory_size: None,
             virtio_blk_matches: [Info {
@@ -121,10 +127,21 @@ pub fn discover() -> Option<Found> {
     // later claims that same free memory. Fall back to that address
     // whenever start.S didn't actually receive a pointer in x0 (real
     // hardware / a future raw-Image boot path would set it).
-    let qemu_elf_boot_dtb_addr = mmu::KERNEL_LOAD_ADDR + mmu::KERNEL_IMAGE_MAX_LEN;
-    let dtb_addr = match dtb_phys_addr.load(Ordering::Acquire) {
-        0 => qemu_elf_boot_dtb_addr,
-        addr => addr,
+    let fallback_dtb_addr = if mmu::kernel_load_addr() == 0x0200_0000 {
+        0x0400_0000
+    } else {
+        mmu::KERNEL_LOAD_ADDR + mmu::KERNEL_IMAGE_MAX_LEN
+    };
+
+    let raw_addr = dtb_phys_addr.load(Ordering::Acquire);
+    let dtb_addr = if raw_addr != 0 {
+        if mmu::kernel_load_addr() == 0x0200_0000 && raw_addr >= 0x2000_0000 {
+            fallback_dtb_addr
+        } else {
+            raw_addr
+        }
+    } else {
+        fallback_dtb_addr
     };
 
     mmu::map_extra(
@@ -146,10 +163,9 @@ pub fn discover() -> Option<Found> {
 
     let magic = read_be_u32(&blob[0..4]);
     if magic != FDT_MAGIC {
-        uart::print("devicetree: invalid magic\n");
+        uart::print("devicetree: no FDT header found at address\n");
         return None;
     }
-
     let totalsize = read_be_u32(&blob[4..8]) as usize;
     let struct_off = read_be_u32(&blob[8..12]) as usize;
     let strings_off = read_be_u32(&blob[12..16]) as usize;
@@ -234,57 +250,112 @@ pub fn discover() -> Option<Found> {
                 }
 
                 if (current_node_name.starts_with("pl011")
-                    || current_node_name.starts_with("uart@"))
-                    && prop_name == "reg"
-                    && prop_val.len() >= 8
+                    || current_node_name.starts_with("uart@")
+                    || current_node_name.starts_with("serial@"))
                 {
-                    let base = read_be_u64(&prop_val[0..8]);
-                    found.uart_base = Some(base);
-                    mmu::map_extra(
-                        base,
-                        mmu::PAGE_SIZE,
-                        mmu::Prot {
-                            writable: true,
-                            executable: false,
-                            user: false,
-                            device: true,
-                        },
-                    );
+                    if prop_name == "compatible" {
+                        if let Ok(comp) = core::str::from_utf8(prop_val) {
+                            if comp.contains("meson-uart") || comp.contains("meson-g12a-uart") {
+                                crate::drivers::uart::set_kind(
+                                    crate::drivers::uart::UartKind::MesonAo,
+                                );
+                            } else if comp.contains("pl011") {
+                                crate::drivers::uart::set_kind(
+                                    crate::drivers::uart::UartKind::Pl011,
+                                );
+                            }
+                        }
+                    }
+                    if prop_name == "reg" && prop_val.len() >= 8 {
+                        let base = read_be_u64(&prop_val[0..8]);
+                        found.uart_base = Some(base);
+                        mmu::map_extra(
+                            base,
+                            mmu::PAGE_SIZE,
+                            mmu::Prot {
+                                writable: true,
+                                executable: false,
+                                user: false,
+                                device: true,
+                            },
+                        );
+                    }
                 }
 
-                if (current_node_name.starts_with("intc@")
-                    || current_node_name.starts_with("interrupt-controller@"))
-                    && prop_name == "reg"
-                    && prop_val.len() >= 32
+                if current_node_name.starts_with("intc@")
+                    || current_node_name.starts_with("interrupt-controller@")
                 {
-                    let dist_base = read_be_u64(&prop_val[0..8]);
-                    let dist_size = read_be_u64(&prop_val[8..16]);
-                    let cpu_base = read_be_u64(&prop_val[16..24]);
-                    let cpu_size = read_be_u64(&prop_val[24..32]);
+                    if prop_name == "compatible" {
+                        if let Ok(comp) = core::str::from_utf8(prop_val) {
+                            if comp.contains("gic-v3") || comp.contains("gicv3") {
+                                found.gic_version = crate::drivers::gic::GicVersion::V3;
+                            }
+                        }
+                    }
+                    if prop_name == "reg" && prop_val.len() >= 32 {
+                        let dist_base = read_be_u64(&prop_val[0..8]);
+                        let dist_size = read_be_u64(&prop_val[8..16]);
+                        let second_base = read_be_u64(&prop_val[16..24]);
+                        let second_size = read_be_u64(&prop_val[24..32]);
 
-                    found.gic_dist_base = Some(dist_base);
-                    found.gic_cpu_base = Some(cpu_base);
+                        found.gic_dist_base = Some(dist_base);
+                        if found.gic_version == crate::drivers::gic::GicVersion::V3 {
+                            found.gic_redist_base = Some(second_base);
+                        } else {
+                            found.gic_cpu_base = Some(second_base);
+                        }
 
-                    mmu::map_extra(
-                        dist_base,
-                        dist_size.max(mmu::PAGE_SIZE),
-                        mmu::Prot {
-                            writable: true,
-                            executable: false,
-                            user: false,
-                            device: true,
-                        },
-                    );
-                    mmu::map_extra(
-                        cpu_base,
-                        cpu_size.max(mmu::PAGE_SIZE),
-                        mmu::Prot {
-                            writable: true,
-                            executable: false,
-                            user: false,
-                            device: true,
-                        },
-                    );
+                        mmu::map_extra(
+                            dist_base,
+                            dist_size.max(mmu::PAGE_SIZE),
+                            mmu::Prot {
+                                writable: true,
+                                executable: false,
+                                user: false,
+                                device: true,
+                            },
+                        );
+                        mmu::map_extra(
+                            second_base,
+                            second_size.max(mmu::PAGE_SIZE),
+                            mmu::Prot {
+                                writable: true,
+                                executable: false,
+                                user: false,
+                                device: true,
+                            },
+                        );
+                    }
+                }
+
+                if current_node_name.starts_with("vpu@")
+                    || current_node_name.starts_with("display@")
+                    || current_node_name.starts_with("phy@")
+                    || current_node_name.starts_with("bus@")
+                    || current_node_name.starts_with("sys-ctrl@")
+                    || current_node_name.starts_with("reset-controller@")
+                {
+                    if current_node_name.starts_with("vpu@")
+                        || current_node_name.starts_with("display@")
+                    {
+                        found.has_amlogic_vpu = true;
+                    }
+                    if prop_name == "reg" && prop_val.len() >= 16 {
+                        let base = read_be_u64(&prop_val[0..8]);
+                        let size = read_be_u64(&prop_val[8..16]);
+                        if base != 0 && size != 0 {
+                            mmu::map_extra(
+                                base,
+                                size.max(mmu::PAGE_SIZE),
+                                mmu::Prot {
+                                    writable: true,
+                                    executable: false,
+                                    user: false,
+                                    device: true,
+                                },
+                            );
+                        }
+                    }
                 }
 
                 if current_node_name.starts_with("virtio_mmio@")
