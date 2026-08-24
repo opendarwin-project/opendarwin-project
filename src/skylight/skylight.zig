@@ -103,6 +103,11 @@ const Server = struct {
     /// clients can still render and be composited (mirrors Prism's headless
     /// Darwin display).
     headless: bool = false,
+
+    // Window drag state
+    dragging_wid: ?CGSWindowID = null,
+    drag_offset_x: i32 = 0,
+    drag_offset_y: i32 = 0,
 };
 
 var server: Server = .{};
@@ -181,10 +186,56 @@ fn updateCursorFromHid() bool {
             }
         }
     }
+    const prev_buttons = server.buttons;
     if (server.buttons != state.buttons) {
         server.buttons = state.buttons;
         changed = true;
     }
+
+    const btn_pressed = (state.buttons & 1) != 0;
+    const prev_pressed = (prev_buttons & 1) != 0;
+
+    const cur_ix: i32 = @intFromFloat(server.cursor_pos.x);
+    const cur_iy: i32 = @intFromFloat(server.cursor_pos.y);
+
+    if (btn_pressed and !prev_pressed) {
+        // Left button down: test title bar for dragging, or content for focus
+        if (server.cg.hitTestTitleBar(cur_ix, cur_iy)) |w| {
+            _ = server.cg.orderWindow(w.wid, 1);
+            server.dragging_wid = w.wid;
+            server.drag_offset_x = cur_ix - w.bounds.x;
+            server.drag_offset_y = cur_iy - w.bounds.y;
+            server.dirty = true;
+            changed = true;
+        } else if (server.cg.hitTest(cur_ix, cur_iy)) |w| {
+            _ = server.cg.orderWindow(w.wid, 1);
+            server.dirty = true;
+            changed = true;
+        }
+    } else if (btn_pressed) {
+        // Left button held: move dragged window
+        if (server.dragging_wid) |wid| {
+            if (server.cg.find(wid)) |w| {
+                const new_x = cur_ix - server.drag_offset_x;
+                const new_y = cur_iy - server.drag_offset_y;
+                if (w.bounds.x != new_x or w.bounds.y != new_y) {
+                    w.bounds.x = new_x;
+                    w.bounds.y = new_y;
+                    server.dirty = true;
+                    changed = true;
+                }
+            } else {
+                server.dragging_wid = null;
+            }
+        }
+    } else if (!btn_pressed and prev_pressed) {
+        // Left button up: end drag
+        if (server.dragging_wid != null) {
+            server.dragging_wid = null;
+            changed = true;
+        }
+    }
+
     return changed;
 }
 
@@ -319,6 +370,7 @@ pub export fn CGSReleaseWindow(connection: CGSConnectionID, window: CGSWindowID)
     if (w.cid != connection) return kCGErrorInvalidConnection;
     if (w.backing) |b| free(b.ptr);
     _ = server.cg.releaseWindow(window);
+    server.dirty = true;
     return kCGErrorSuccess;
 }
 
@@ -329,12 +381,15 @@ pub export fn CGSOrderWindow(
     relative_to: CGSWindowID,
 ) callconv(.c) CGError {
     _ = .{ connection, relative_to };
-    return if (server.cg.orderWindow(window, mode)) kCGErrorSuccess else kCGErrorIllegalArgument;
+    const ok = server.cg.orderWindow(window, mode);
+    if (ok) server.dirty = true;
+    return if (ok) kCGErrorSuccess else kCGErrorIllegalArgument;
 }
 
 pub export fn CGSMoveWindow(connection: CGSConnectionID, window: CGSWindowID, point: *const CGPoint) callconv(.c) CGError {
     _ = connection;
     const ok = server.cg.moveWindow(window, @intFromFloat(point.x), @intFromFloat(point.y));
+    if (ok) server.dirty = true;
     return if (ok) kCGErrorSuccess else kCGErrorIllegalArgument;
 }
 
@@ -342,6 +397,7 @@ pub export fn CGSSetWindowLevel(connection: CGSConnectionID, window: CGSWindowID
     _ = connection;
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
     w.level = level;
+    server.dirty = true;
     return kCGErrorSuccess;
 }
 
@@ -349,6 +405,7 @@ pub export fn CGSSetWindowAlpha(connection: CGSConnectionID, window: CGSWindowID
     _ = connection;
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
     w.alpha = alpha;
+    server.dirty = true;
     return kCGErrorSuccess;
 }
 
@@ -358,7 +415,9 @@ pub export fn CGSSetWindowTitle(connection: CGSConnectionID, window: CGSWindowID
     _ = connection;
     var n: usize = 0;
     while (title[n] != 0) : (n += 1) {}
-    return if (server.cg.setTitle(window, title[0..n])) kCGErrorSuccess else kCGErrorIllegalArgument;
+    const ok = server.cg.setTitle(window, title[0..n]);
+    if (ok) server.dirty = true;
+    return if (ok) kCGErrorSuccess else kCGErrorIllegalArgument;
 }
 
 /// CFString-shaped property setter kept for source compatibility.  Without
@@ -456,6 +515,7 @@ pub export fn CGSSetWindowTags(
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
     if (tags[0] & 1 != 0) {
         w.decorated = true;
+        server.dirty = true;
     }
     return kCGErrorSuccess;
 }
@@ -470,6 +530,7 @@ pub export fn CGSClearWindowTags(
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
     if (tags[0] & 1 != 0) {
         w.decorated = false;
+        server.dirty = true;
     }
     return kCGErrorSuccess;
 }

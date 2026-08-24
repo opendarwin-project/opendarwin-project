@@ -165,7 +165,6 @@ fn backingOf(cid: CGSConnectionID, wid: CGSWindowID, width: u32, height: u32) ?B
 }
 
 fn makeWindow(cid: CGSConnectionID, x: f32, y: f32, width: u32, height: u32, title: ?[*:0]const u8) ?CGSWindowID {
-    _ = title;
     var region: CGSRegionRef = null;
     const rect = CGRect{ .size = .{ .width = @floatFromInt(width), .height = @floatFromInt(height) } };
     if (CGSNewRegionWithRect(&rect, &region) != 0) return null;
@@ -173,6 +172,7 @@ fn makeWindow(cid: CGSConnectionID, x: f32, y: f32, width: u32, height: u32, tit
 
     var wid: CGSWindowID = 0;
     if (CGSNewWindow(cid, kCGSBackingBuffered, x, y, region, &wid) != 0) return null;
+    if (title) |t| _ = CGSSetWindowTitle(cid, wid, t);
     _ = CGSOrderWindow(cid, wid, 1, 0);
     return wid;
 }

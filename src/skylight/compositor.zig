@@ -90,6 +90,18 @@ pub const Window = struct {
         return self.title[0..self.title_len];
     }
 
+    /// Title bar rectangle in screen space (if decorated).
+    pub fn titleBarRect(self: *const Window) Rect {
+        if (!self.decorated) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const f = self.frame();
+        return .{
+            .x = f.x,
+            .y = f.y,
+            .width = f.width,
+            .height = title_bar_height,
+        };
+    }
+
     /// Full outer frame including decoration, i.e. what CGSGetWindowBounds
     /// reports for a decorated window.
     pub fn frame(self: *const Window) Rect {
@@ -213,6 +225,20 @@ pub const Compositor = struct {
         return hit;
     }
 
+    /// Topmost window whose *title bar* contains the point — used for window
+    /// dragging and title bar interactions.
+    pub fn hitTestTitleBar(self: *Compositor, x: i32, y: i32) ?*Window {
+        var hit: ?*Window = null;
+        for (&self.windows) |*w| {
+            if (!w.in_use or !w.ordered_in or !w.decorated) continue;
+            if (!w.titleBarRect().contains(x, y)) continue;
+            if (hit) |h| {
+                if (w.level > h.level or (w.level == h.level and w.order_seq > h.order_seq)) hit = w;
+            } else hit = w;
+        }
+        return hit;
+    }
+
     /// Flatten every ordered-in window into `target` (CGSFlushWindow's server
     /// side).  Returns the number of windows composited.
     pub fn composite(self: *Compositor, target: Surface) u32 {
@@ -240,16 +266,37 @@ pub const Compositor = struct {
     fn paintWindow(self: *Compositor, target: Surface, w: *const Window) void {
         if (w.decorated) {
             const f = w.frame();
+            // Window border outline
             fill(target, f, self.frame_color);
+            // Title bar background
             fill(target, .{
                 .x = f.x + border,
                 .y = f.y + border,
                 .width = f.width - 2 * border,
                 .height = title_bar_height - border,
             }, self.title_active);
-            // Traffic-light stand-in; real WindowServer asks AppKit for the
-            // decoration bitmap, we synthesize a marker instead.
-            fill(target, .{ .x = f.x + 7, .y = f.y + 7, .width = 9, .height = 9 }, .{ .b = 0x4b, .g = 0x57, .r = 0xff });
+
+            // macOS Aqua-style traffic lights: Red (close), Yellow (minimize), Green (zoom)
+            // Center y = f.y + 11, radius = 4 (diameter 9)
+            const cy = f.y + 11;
+            drawTrafficLight(target, f.x + 13, cy, 4, .{ .r = 0xff, .g = 0x5f, .b = 0x56 }, .{ .r = 0xdf, .g = 0x48, .b = 0x40 });
+            drawTrafficLight(target, f.x + 27, cy, 4, .{ .r = 0xff, .g = 0xbd, .b = 0x2e }, .{ .r = 0xde, .g = 0x9f, .b = 0x1a });
+            drawTrafficLight(target, f.x + 41, cy, 4, .{ .r = 0x27, .g = 0xc9, .b = 0x3f }, .{ .r = 0x1d, .g = 0xaa, .b = 0x31 });
+
+            // Title text with subtle drop shadow
+            const title = w.titleSlice();
+            if (title.len > 0) {
+                const text_w = @as(i32, @intCast(title.len)) * 6;
+                const center_x = f.x + @divTrunc(f.width - text_w, 2);
+                const draw_x = @max(f.x + 55, center_x);
+                const draw_y = f.y + 7;
+                if (draw_x + text_w <= f.x + f.width - 4) {
+                    drawText(target, title, draw_x, draw_y + 1, .{ .r = 0x10, .g = 0x10, .b = 0x10, .a = 0xaa });
+                    drawText(target, title, draw_x, draw_y, .{ .r = 0xf0, .g = 0xf0, .b = 0xf0, .a = 0xff });
+                }
+            }
+
+            // Title bar bottom shadow line
             fill(target, .{
                 .x = f.x + border,
                 .y = f.y + title_bar_height - 1,
@@ -276,6 +323,163 @@ fn store(target: Surface, off: usize, c: Color) void {
         },
     }
     p[3] = c.a;
+}
+
+fn drawTrafficLight(target: Surface, cx: i32, cy: i32, r: i32, fill_col: Color, border_col: Color) void {
+    var y = -r;
+    while (y <= r) : (y += 1) {
+        var x = -r;
+        while (x <= r) : (x += 1) {
+            const dist_sq = x * x + y * y;
+            if (dist_sq <= r * r) {
+                const px = cx + x;
+                const py = cy + y;
+                if (px >= 0 and py >= 0 and px < @as(i32, @intCast(target.width)) and py < @as(i32, @intCast(target.height))) {
+                    const off = @as(usize, @intCast(py)) * target.stride + @as(usize, @intCast(px)) * 4;
+                    const c = if (dist_sq >= (r - 1) * (r - 1)) border_col else fill_col;
+                    store(target, off, c);
+                }
+            }
+        }
+    }
+}
+
+// 5x7 ASCII bitmap font (characters 32..126). 5 columns per glyph.
+const font5x7 = [95][5]u8{
+    .{ 0x00, 0x00, 0x00, 0x00, 0x00 }, // 32 ' '
+    .{ 0x00, 0x00, 0x5f, 0x00, 0x00 }, // 33 '!'
+    .{ 0x00, 0x07, 0x00, 0x07, 0x00 }, // 34 '"'
+    .{ 0x14, 0x7f, 0x14, 0x7f, 0x14 }, // 35 '#'
+    .{ 0x24, 0x2a, 0x7f, 0x2a, 0x12 }, // 36 '$'
+    .{ 0x23, 0x13, 0x08, 0x64, 0x62 }, // 37 '%'
+    .{ 0x36, 0x49, 0x55, 0x22, 0x50 }, // 38 '&'
+    .{ 0x00, 0x05, 0x03, 0x00, 0x00 }, // 39 '\''
+    .{ 0x00, 0x1c, 0x22, 0x41, 0x00 }, // 40 '('
+    .{ 0x00, 0x41, 0x22, 0x1c, 0x00 }, // 41 ')'
+    .{ 0x14, 0x08, 0x3e, 0x08, 0x14 }, // 42 '*'
+    .{ 0x08, 0x08, 0x3e, 0x08, 0x08 }, // 43 '+'
+    .{ 0x00, 0x00, 0xa0, 0x60, 0x00 }, // 44 ','
+    .{ 0x08, 0x08, 0x08, 0x08, 0x08 }, // 45 '-'
+    .{ 0x00, 0x60, 0x60, 0x00, 0x00 }, // 46 '.'
+    .{ 0x20, 0x10, 0x08, 0x04, 0x02 }, // 47 '/'
+    .{ 0x3e, 0x51, 0x49, 0x45, 0x3e }, // 48 '0'
+    .{ 0x00, 0x42, 0x7f, 0x40, 0x00 }, // 49 '1'
+    .{ 0x42, 0x61, 0x51, 0x49, 0x46 }, // 50 '2'
+    .{ 0x21, 0x41, 0x45, 0x4b, 0x31 }, // 51 '3'
+    .{ 0x18, 0x14, 0x12, 0x7f, 0x10 }, // 52 '4'
+    .{ 0x27, 0x45, 0x45, 0x45, 0x39 }, // 53 '5'
+    .{ 0x3c, 0x4a, 0x49, 0x49, 0x30 }, // 54 '6'
+    .{ 0x01, 0x71, 0x09, 0x05, 0x03 }, // 55 '7'
+    .{ 0x36, 0x49, 0x49, 0x49, 0x36 }, // 56 '8'
+    .{ 0x06, 0x49, 0x49, 0x29, 0x1e }, // 57 '9'
+    .{ 0x00, 0x36, 0x36, 0x00, 0x00 }, // 58 ':'
+    .{ 0x00, 0x56, 0x36, 0x00, 0x00 }, // 59 ';'
+    .{ 0x08, 0x14, 0x22, 0x41, 0x00 }, // 60 '<'
+    .{ 0x14, 0x14, 0x14, 0x14, 0x14 }, // 61 '='
+    .{ 0x00, 0x41, 0x22, 0x14, 0x08 }, // 62 '>'
+    .{ 0x02, 0x01, 0x51, 0x09, 0x06 }, // 63 '?'
+    .{ 0x32, 0x49, 0x59, 0x51, 0x3e }, // 64 '@'
+    .{ 0x7e, 0x11, 0x11, 0x11, 0x7e }, // 65 'A'
+    .{ 0x7f, 0x49, 0x49, 0x49, 0x36 }, // 66 'B'
+    .{ 0x3e, 0x41, 0x41, 0x41, 0x22 }, // 67 'C'
+    .{ 0x7f, 0x41, 0x41, 0x22, 0x1c }, // 68 'D'
+    .{ 0x7f, 0x49, 0x49, 0x49, 0x41 }, // 69 'E'
+    .{ 0x7f, 0x09, 0x09, 0x09, 0x01 }, // 70 'F'
+    .{ 0x3e, 0x41, 0x49, 0x49, 0x7a }, // 71 'G'
+    .{ 0x7f, 0x08, 0x08, 0x08, 0x7f }, // 72 'H'
+    .{ 0x00, 0x41, 0x7f, 0x41, 0x00 }, // 73 'I'
+    .{ 0x20, 0x40, 0x41, 0x3f, 0x01 }, // 74 'J'
+    .{ 0x7f, 0x08, 0x14, 0x22, 0x41 }, // 75 'K'
+    .{ 0x7f, 0x40, 0x40, 0x40, 0x40 }, // 76 'L'
+    .{ 0x7f, 0x02, 0x0c, 0x02, 0x7f }, // 77 'M'
+    .{ 0x7f, 0x04, 0x08, 0x10, 0x7f }, // 78 'N'
+    .{ 0x3e, 0x41, 0x41, 0x41, 0x3e }, // 79 'O'
+    .{ 0x7f, 0x09, 0x09, 0x09, 0x06 }, // 80 'P'
+    .{ 0x3e, 0x41, 0x51, 0x21, 0x5e }, // 81 'Q'
+    .{ 0x7f, 0x09, 0x19, 0x29, 0x46 }, // 82 'R'
+    .{ 0x46, 0x49, 0x49, 0x49, 0x31 }, // 83 'S'
+    .{ 0x01, 0x01, 0x7f, 0x01, 0x01 }, // 84 'T'
+    .{ 0x3f, 0x40, 0x40, 0x40, 0x3f }, // 85 'U'
+    .{ 0x1f, 0x20, 0x40, 0x20, 0x1f }, // 86 'V'
+    .{ 0x3f, 0x40, 0x38, 0x40, 0x3f }, // 87 'W'
+    .{ 0x63, 0x14, 0x08, 0x14, 0x63 }, // 88 'X'
+    .{ 0x07, 0x08, 0x70, 0x08, 0x07 }, // 89 'Y'
+    .{ 0x61, 0x51, 0x49, 0x45, 0x43 }, // 90 'Z'
+    .{ 0x00, 0x7f, 0x41, 0x41, 0x00 }, // 91 '['
+    .{ 0x55, 0x2a, 0x55, 0x2a, 0x55 }, // 92 '\'
+    .{ 0x00, 0x41, 0x41, 0x7f, 0x00 }, // 93 ']'
+    .{ 0x04, 0x02, 0x01, 0x02, 0x04 }, // 94 '^'
+    .{ 0x40, 0x40, 0x40, 0x40, 0x40 }, // 95 '_'
+    .{ 0x00, 0x01, 0x02, 0x04, 0x00 }, // 96 '`'
+    .{ 0x20, 0x54, 0x54, 0x54, 0x78 }, // 97 'a'
+    .{ 0x7f, 0x48, 0x44, 0x44, 0x38 }, // 98 'b'
+    .{ 0x38, 0x44, 0x44, 0x44, 0x20 }, // 99 'c'
+    .{ 0x38, 0x44, 0x44, 0x48, 0x7f }, // 100 'd'
+    .{ 0x38, 0x54, 0x54, 0x54, 0x18 }, // 101 'e'
+    .{ 0x08, 0x7e, 0x09, 0x01, 0x02 }, // 102 'f'
+    .{ 0x0c, 0x52, 0x52, 0x52, 0x3e }, // 103 'g'
+    .{ 0x7f, 0x08, 0x04, 0x04, 0x78 }, // 104 'h'
+    .{ 0x00, 0x44, 0x7d, 0x40, 0x00 }, // 105 'i'
+    .{ 0x20, 0x40, 0x44, 0x3d, 0x00 }, // 106 'j'
+    .{ 0x7f, 0x10, 0x28, 0x44, 0x00 }, // 107 'k'
+    .{ 0x00, 0x41, 0x7f, 0x40, 0x00 }, // 108 'l'
+    .{ 0x7c, 0x04, 0x18, 0x04, 0x78 }, // 109 'm'
+    .{ 0x7c, 0x08, 0x04, 0x04, 0x78 }, // 110 'n'
+    .{ 0x38, 0x44, 0x44, 0x44, 0x38 }, // 111 'o'
+    .{ 0x7c, 0x14, 0x14, 0x14, 0x08 }, // 112 'p'
+    .{ 0x08, 0x14, 0x14, 0x18, 0x7c }, // 113 'q'
+    .{ 0x7c, 0x08, 0x04, 0x04, 0x08 }, // 114 'r'
+    .{ 0x48, 0x54, 0x54, 0x54, 0x20 }, // 115 's'
+    .{ 0x04, 0x3f, 0x44, 0x40, 0x20 }, // 116 't'
+    .{ 0x3c, 0x40, 0x40, 0x20, 0x7c }, // 117 'u'
+    .{ 0x1c, 0x20, 0x40, 0x20, 0x1c }, // 118 'v'
+    .{ 0x3c, 0x40, 0x30, 0x40, 0x3c }, // 119 'w'
+    .{ 0x44, 0x28, 0x10, 0x28, 0x44 }, // 120 'x'
+    .{ 0x0c, 0x50, 0x50, 0x50, 0x3c }, // 121 'y'
+    .{ 0x44, 0x64, 0x54, 0x4c, 0x44 }, // 122 'z'
+    .{ 0x00, 0x08, 0x36, 0x41, 0x00 }, // 123 '{'
+    .{ 0x00, 0x00, 0x77, 0x00, 0x00 }, // 124 '|'
+    .{ 0x00, 0x41, 0x36, 0x08, 0x00 }, // 125 '}'
+    .{ 0x10, 0x08, 0x08, 0x10, 0x08 }, // 126 '~'
+};
+
+fn drawChar(target: Surface, ch: u8, x: i32, y: i32, color: Color) void {
+    if (ch < 32 or ch > 126) return;
+    const glyph = font5x7[ch - 32];
+    for (0..5) |col| {
+        const cx = x + @as(i32, @intCast(col));
+        const bits = glyph[col];
+        for (0..7) |row| {
+            if ((bits & (@as(u8, 1) << @truncate(row))) != 0) {
+                const cy = y + @as(i32, @intCast(row));
+                if (cx >= 0 and cy >= 0 and cx < @as(i32, @intCast(target.width)) and cy < @as(i32, @intCast(target.height))) {
+                    const off = @as(usize, @intCast(cy)) * target.stride + @as(usize, @intCast(cx)) * 4;
+                    if (color.a == 255) {
+                        store(target, off, color);
+                    } else {
+                        const d = target.bytes[off..][0..4];
+                        const dc = switch (target.order) {
+                            .bgra => Color{ .b = d[0], .g = d[1], .r = d[2] },
+                            .rgba => Color{ .r = d[0], .g = d[1], .b = d[2] },
+                        };
+                        store(target, off, .{
+                            .b = mix(color.b, dc.b, color.a),
+                            .g = mix(color.g, dc.g, color.a),
+                            .r = mix(color.r, dc.r, color.a),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn drawText(target: Surface, text: []const u8, x: i32, y: i32, color: Color) void {
+    var cur_x = x;
+    for (text) |ch| {
+        drawChar(target, ch, cur_x, y, color);
+        cur_x += 6; // 5px glyph width + 1px spacing
+    }
 }
 
 pub const cursor_width = 12;
@@ -566,4 +770,29 @@ test "cursor draws black border and white fill over desktop" {
     try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 0]);
     try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 1]);
     try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 2]);
+}
+
+test "title bar hit test and window dragging" {
+    var cg = Compositor{};
+    const cid = cg.newConnection();
+    // Window content at (100, 100), size 200x150.
+    // Title bar is at (100 - border, 100 - title_bar_height) = (99, 78) with width 202, height 22.
+    const w = cg.newWindow(cid, .{ .x = 100, .y = 100, .width = 200, .height = 150 }).?;
+    _ = cg.setTitle(w.wid, "Test Window");
+    _ = cg.orderWindow(w.wid, 1);
+
+    // Hit test inside title bar: (150, 85)
+    const hit_tb = cg.hitTestTitleBar(150, 85);
+    try std.testing.expect(hit_tb != null);
+    try std.testing.expectEqual(w.wid, hit_tb.?.wid);
+
+    // Hit test outside title bar (in content): (150, 120) -> hitTest finds it, hitTestTitleBar does not
+    try std.testing.expect(cg.hitTestTitleBar(150, 120) == null);
+    try std.testing.expect(cg.hitTest(150, 120) != null);
+
+    // Move window
+    _ = cg.moveWindow(w.wid, 150, 130);
+    try std.testing.expectEqual(@as(i32, 150), w.bounds.x);
+    try std.testing.expectEqual(@as(i32, 130), w.bounds.y);
+    try std.testing.expect(cg.hitTestTitleBar(160, 115) != null);
 }
