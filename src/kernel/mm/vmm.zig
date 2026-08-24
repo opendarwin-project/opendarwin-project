@@ -135,6 +135,18 @@ pub const Vmm = struct {
     }
 
     fn addRegionChecked(self: *Vmm, start: u64, end: u64, prot: mmu.Prot, flags: u32) bool {
+        // Try to merge with an existing adjacent region if attributes match
+        for (self.regions[0..self.region_count]) |*r| {
+            if (r.flags == flags and std.meta.eql(r.prot, prot)) {
+                if (r.end == start) {
+                    r.end = end;
+                    return true;
+                } else if (r.start == end) {
+                    r.start = start;
+                    return true;
+                }
+            }
+        }
         if (self.region_count >= MAX_REGIONS) return false;
         self.regions[self.region_count] = .{ .start = start, .end = end, .prot = prot, .flags = flags };
         self.region_count += 1;
@@ -315,26 +327,57 @@ pub const Vmm = struct {
         const end_overflow = @addWithOverflow(addr, aligned_len);
         if (end_overflow[1] != 0) return -1;
         const end = end_overflow[0];
+
         var i: usize = 0;
         while (i < self.region_count) {
             const r = &self.regions[i];
-            if (addr < r.end and end > r.start) {
-                if (addr <= r.start and end >= r.end) {
-                    if ((r.flags & VM_FLAG_SHARED) != 0) {
-                        // For shared regions, just unmap without freeing physical pages
-                        unmapRangeNoFree(self.ttbr0, r.start, r.end - r.start);
-                        // Release reference to shared memory
-                        shmClose(r.shared_name[0..r.shared_name_len]);
-                    } else {
-                        unmapRange(self.ttbr0, r.start, r.end - r.start, (r.flags & VM_FLAG_COW) != 0);
-                    }
-                    if (i < self.region_count - 1) self.regions[i] = self.regions[self.region_count - 1];
-                    self.region_count -= 1;
-                    continue;
-                }
-                return -1;
+            if (end <= r.start or addr >= r.end) {
+                i += 1;
+                continue;
             }
-            i += 1;
+
+            const unmap_start = @max(addr, r.start);
+            const unmap_end = @min(end, r.end);
+            const unmap_len = unmap_end - unmap_start;
+
+            if ((r.flags & VM_FLAG_SHARED) != 0) {
+                unmapRangeNoFree(self.ttbr0, unmap_start, unmap_len);
+                if (unmap_start == r.start and unmap_end == r.end) {
+                    shmClose(r.shared_name[0..r.shared_name_len]);
+                }
+            } else {
+                unmapRange(self.ttbr0, unmap_start, unmap_len, (r.flags & VM_FLAG_COW) != 0);
+            }
+
+            if (unmap_start == r.start and unmap_end == r.end) {
+                // Entire region unmapped
+                if (i < self.region_count - 1) self.regions[i] = self.regions[self.region_count - 1];
+                self.region_count -= 1;
+                continue;
+            } else if (unmap_start == r.start) {
+                // Unmapped prefix
+                r.start = unmap_end;
+                i += 1;
+            } else if (unmap_end == r.end) {
+                // Unmapped suffix
+                r.end = unmap_start;
+                i += 1;
+            } else {
+                // Unmapped middle -> split region
+                if (self.region_count >= MAX_REGIONS) return -1;
+                const old_end = r.end;
+                r.end = unmap_start;
+                self.regions[self.region_count] = .{
+                    .start = unmap_end,
+                    .end = old_end,
+                    .prot = r.prot,
+                    .flags = r.flags,
+                    .shared_name_len = r.shared_name_len,
+                    .shared_name = r.shared_name,
+                };
+                self.region_count += 1;
+                i += 1;
+            }
         }
         return 0;
     }

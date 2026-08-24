@@ -90,21 +90,18 @@ fn levelIndex(va: u64, level: u2) u9 {
 // low-address range, so a handful of dylib segments can burn through many
 // tables fast. 64 was fine for the identity-mapped-only milestone; raised
 // generously now that per-task extra mappings exist.
-const MAX_BOOT_TABLES = 512;
+const MAX_BOOT_TABLES = 1024;
 var table_pool: [MAX_BOOT_TABLES]Table align(PAGE_SIZE) = undefined;
 var table_pool_used: usize = 0;
 
 fn allocTable() *Table {
+    if (page_alloc_fn) |alloc_page| {
+        const pa = alloc_page();
+        return @ptrFromInt(pa);
+    }
     if (table_pool_used >= MAX_BOOT_TABLES) @panic("mmu: out of boot page tables");
     const t = &table_pool[table_pool_used];
     table_pool_used += 1;
-    // Deliberately not re-zeroed here: `table_pool` lives in .bss, which
-    // start.S already zeroed with a scalar (safe pre-MMU) store loop, and
-    // each slot is handed out exactly once. A runtime `t.* = Table.zeroed()`
-    // here would be a 4KB struct-copy that the compiler is free to lower to
-    // wide/vector stores - which unconditionally fault on Device memory
-    // (the type the architecture forces on every access while the MMU we're
-    // in the middle of building is still disabled).
     return t;
 }
 

@@ -21,9 +21,12 @@
             .url = "git+https://github.com/Midstall/conduit#1d1a9d4f2ecda4fd91f571a63e816727c1a85fad",
             .hash = "conduit-0.1.0-R_mFrKEiBQCsP4aH4NpICkETF0qb408ouijHM_x5VH8c",
         },
+        // .prism = .{
+        //     .url = "git+https://github.com/Midstall/prism#b659936b2dd28e818bc273925cb35b8439157fb0",
+        //     .hash = "prism-0.1.0-PSE12N28OAC08yiTTMuxVaIrvgqfAOggXF5vprb3LKZc",
+        // },
         .prism = .{
-            .url = "git+https://github.com/Midstall/prism#b659936b2dd28e818bc273925cb35b8439157fb0",
-            .hash = "prism-0.1.0-PSE12N28OAC08yiTTMuxVaIrvgqfAOggXF5vprb3LKZc",
+            .path = "../prism",
         },
     },
     .paths = .{

@@ -30,26 +30,47 @@ IGNORED = {
 }
 
 GROUPS = [
-    ("malloc/allocator", r"^_(malloc|calloc|realloc|free|valloc|posix_memalign|malloc_|mach_vm_|vm_)"),
-    ("string/mem", r"^_(mem|str|str[nl]|bcopy|bzero|snprintf|vsnprintf|asprintf|qsort|bsearch)"),
-    ("stdio/file", r"^_(open|close|read|write|lseek|stat|fstat|fopen|fclose|fread|fwrite|fprintf|fputs|fflush|mkstemp|unlink|access|getcwd|opendir|readdir|closedir)"),
+    (
+        "malloc/allocator",
+        r"^_(malloc|calloc|realloc|free|valloc|posix_memalign|malloc_|mach_vm_|vm_)",
+    ),
+    (
+        "string/mem",
+        r"^_(mem|str|str[nl]|bcopy|bzero|snprintf|vsnprintf|asprintf|qsort|bsearch)",
+    ),
+    (
+        "stdio/file",
+        r"^_(open|close|read|write|lseek|stat|fstat|fopen|fclose|fread|fwrite|fprintf|fputs|fflush|mkstemp|unlink|access|getcwd|opendir|readdir|closedir)",
+    ),
     ("pthread/TLS", r"^_(pthread_|_pthread|__tlv|tlv_)"),
     ("mach", r"^_(mach_|task_|thread_|host_|semaphore_|vm_|mig_|MIG|bootstrap_|ipc_)"),
     ("dispatch", r"^_(dispatch_|_dispatch)"),
     ("dyld/image", r"^_(dl|_dyld|__dyld|getsect|_NSGet)"),
     ("locking", r"^_(os_unfair_lock|OSSpinLock|OSAtomic|__ulock)"),
-    ("time", r"^_(gettimeofday|clock_|time|mktime|localtime|gmtime|nanosleep|usleep|sleep)"),
-    ("locale/ICU", r"^_(u_|ucol_|udat_|unum_|uloc_|ucnv_|localeconv|setlocale|nl_langinfo)"),
+    (
+        "time",
+        r"^_(gettimeofday|clock_|time|mktime|localtime|gmtime|nanosleep|usleep|sleep)",
+    ),
+    (
+        "locale/ICU",
+        r"^_(u_|ucol_|udat_|unum_|uloc_|ucnv_|localeconv|setlocale|nl_langinfo)",
+    ),
     ("notify/xpc/security", r"^_(notify_|xpc_|Sec|CC|audit)"),
     ("CoreFoundation-internal", r"^_(_?CF|__CF)"),
-    ("process/env", r"^_(getenv|setenv|unsetenv|environ|getpid|getuid|geteuid|getgid|sysctl|issetugid|confstr|uname|abort|exit|atexit|__cxa)"),
+    (
+        "process/env",
+        r"^_(getenv|setenv|unsetenv|environ|getpid|getuid|geteuid|getgid|sysctl|issetugid|confstr|uname|abort|exit|atexit|__cxa)",
+    ),
 ]
 
 
 def nm(args):
-    out = subprocess.run(["nm"] + args, capture_output=True, text=True)
+    # Prefer llvm-nm if available since host nm might not support Mach-O targets
+    import shutil
+    nm_bin = shutil.which("llvm-nm") or "nm"
+    out = subprocess.run([nm_bin] + args, capture_output=True, text=True)
     if out.returncode != 0:
-        sys.exit(f"nm failed: {out.stderr.strip()}")
+        sys.exit(f"{nm_bin} failed: {out.stderr.strip()}")
     return out.stdout
 
 
@@ -58,7 +79,11 @@ def defined_symbols(path):
     syms = set()
     for line in nm(["-g", "-P", path]).splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] not in ("U", "u") and not parts[0].endswith(":"):
+        if (
+            len(parts) >= 2
+            and parts[1] not in ("U", "u")
+            and not parts[0].endswith(":")
+        ):
             syms.add(parts[0])
     return syms
 
@@ -84,11 +109,28 @@ def group_of(sym):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("inputs", nargs="+", help="Mach-O objects/archives/dylibs to analyse")
-    ap.add_argument("--provider", action="append", default=[], help="library that already provides symbols (repeatable)")
-    ap.add_argument("--exit-zero", action="store_true", help="always exit 0 (for use as a reporting build step)")
-    ap.add_argument("--show-users", action="store_true", help="list which input file needs each symbol")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "inputs", nargs="+", help="Mach-O objects/archives/dylibs to analyse"
+    )
+    ap.add_argument(
+        "--provider",
+        action="append",
+        default=[],
+        help="library that already provides symbols (repeatable)",
+    )
+    ap.add_argument(
+        "--exit-zero",
+        action="store_true",
+        help="always exit 0 (for use as a reporting build step)",
+    )
+    ap.add_argument(
+        "--show-users",
+        action="store_true",
+        help="list which input file needs each symbol",
+    )
     args = ap.parse_args()
 
     provided = set()
@@ -115,8 +157,10 @@ def main():
             else:
                 print(f"  {sym}")
 
-    print(f"\n{total} unresolved symbol(s) across {len(args.inputs)} input(s), "
-          f"{len(provided)} provided by {len(args.provider)} library(ies)")
+    print(
+        f"\n{total} unresolved symbol(s) across {len(args.inputs)} input(s), "
+        f"{len(provided)} provided by {len(args.provider)} library(ies)"
+    )
     return 1 if total and not args.exit_zero else 0
 
 

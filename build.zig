@@ -82,10 +82,13 @@ fn addKernel(
         // (FEAT_PAuth), and the kernel's PAC groundwork (arch/aarch64/pac.zig)
         // needs a CPU model that implements it to actually exercise.
         "-cpu",
-        // "max",
-        "host",
-        "-accel",
-        "hvf",
+        "max",
+        // TODO: use hvf on aarch64-darwin hosts
+        // "host",
+        // "-accel",
+        // "hvf",
+        "-m",
+        "512M",
         "-smp",
         "4",
         "-serial",
@@ -271,6 +274,7 @@ fn addUserlandProgram(
     program: UserlandProgram,
     skylight: *std.Build.Step.Compile,
     iokit: *std.Build.Step.Compile,
+    prism_dep: ?*std.Build.Dependency,
 ) *std.Build.Step.Compile {
     const guest_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
@@ -278,11 +282,19 @@ fn addUserlandProgram(
         .abi = .none,
     });
 
+    var imports: [1]std.Build.Module.Import = undefined;
+    var num_imports: usize = 0;
+    if (prism_dep) |dep| {
+        imports[num_imports] = .{ .name = "prism", .module = dep.module("prism") };
+        num_imports += 1;
+    }
+
     const mod = b.createModule(.{
         .root_source_file = b.path(program.source),
         .target = guest_target,
         .optimize = optimize,
         .link_libc = false,
+        .imports = imports[0..num_imports],
     });
 
     const exe = b.addExecutable(.{
@@ -605,9 +617,20 @@ pub fn build(b: *std.Build) void {
     const skylight = addSkyLight(b, optimize, iokit);
     _ = addCoreFoundation(b, optimize);
 
+    const guest_prism_dep = b.dependency("prism", .{
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .aarch64,
+            .os_tag = .macos,
+            .abi = .none,
+        }),
+        .optimize = optimize,
+        .drivers = "software",
+    });
+
     var programs: [userland_programs.len]BuiltUserland = undefined;
     for (userland_programs, 0..) |p, i| {
-        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit) };
+        const dep = if (std.mem.eql(u8, p.name, "window-smoke")) guest_prism_dep else null;
+        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit, dep) };
     }
     addSkyLightTests(b, optimize);
     const rootfs_step = addRootfs(b, main_name, programs[0..], libsystem, iokit, skylight);

@@ -18,6 +18,8 @@ pub const SYS_kill: usize = 37;
 pub const SYS_sigaction: usize = 46;
 pub const SYS_sigprocmask: usize = 48;
 pub const SYS_fstat: usize = 62;
+pub const SYS_munmap: usize = 73;
+pub const SYS_mprotect: usize = 74;
 pub const SYS_sigreturn: usize = 184;
 pub const SYS_lseek: usize = 199;
 pub const SYS_socket: usize = 97;
@@ -40,7 +42,22 @@ pub const MACH_task_self_trap: usize = 28;
 pub const MACH_mach_vm_map_trap: usize = 15;
 pub const KERN_SUCCESS: usize = 0;
 
-// ── vm / mmap constants ────────────────────────────────────────────────
+// ── POSIX open / fcntl / seek constants ────────────────────────────────
+pub const O_RDONLY: c_int = 0x0000;
+pub const O_WRONLY: c_int = 0x0001;
+pub const O_RDWR: c_int = 0x0002;
+pub const O_ACCMODE: c_int = 0x0003;
+pub const O_NONBLOCK: c_int = 0x0004;
+pub const O_APPEND: c_int = 0x0008;
+pub const O_CREAT: c_int = 0x0200;
+pub const O_TRUNC: c_int = 0x0400;
+pub const O_EXCL: c_int = 0x0800;
+pub const O_CLOEXEC: c_int = 0x1000000;
+
+pub const SEEK_SET: c_int = 0;
+pub const SEEK_CUR: c_int = 1;
+pub const SEEK_END: c_int = 2;
+
 pub const MAP_PRIVATE_ANON: c_int = 0x1002;
 pub const VM_PROT_READ_WRITE: c_int = 3;
 pub const ENOMEM: c_int = 12;

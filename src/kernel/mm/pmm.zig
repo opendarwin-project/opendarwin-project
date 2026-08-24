@@ -38,10 +38,11 @@ const PageMeta = packed struct {
     refcount: u8, // 0-255, clamped at 255 (saturating)
 };
 
-// We support up to 256 MB of physical memory with this design (32K pages * 4KB).
+// We support up to 2 GB of physical memory with this design (512K PFNs from 0x40000000).
 // Increase MAX_PAGES if you need more.
-const MAX_PAGES: u64 = 32 * 1024; // 128 MB max tracked
+const MAX_PAGES: u64 = 256 * 1024; // Track up to 256K PFNs (1 GB of RAM)
 var page_meta: [MAX_PAGES]PageMeta = undefined;
+var min_pfn: u64 = 0;
 var max_pfn: u64 = 0; // highest PFN we've seen + 1
 
 /// Convert physical address to page frame number.
@@ -54,9 +55,9 @@ inline fn pfnToPa(pfn: u64) u64 {
     return pfn * PAGE_SIZE;
 }
 
-/// Get metadata for a page. Caller must ensure pfn < max_pfn.
+/// Get metadata for a page. Caller must ensure pfn >= min_pfn and pfn < max_pfn.
 inline fn metaFor(pfn: u64) *PageMeta {
-    return &page_meta[pfn];
+    return &page_meta[pfn - min_pfn];
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +78,14 @@ pub const MemoryRegion = struct {
 /// Maps the free region into the kernel's identity-mapped page table and
 /// builds an intrusive singly-linked free list from every page inside it.
 pub fn init(regions: []const MemoryRegion) void {
-    // First pass: find the highest address to size our metadata array
+    if (regions.len > 0) {
+        min_pfn = paToPfn(regions[0].base & ~(PAGE_SIZE - 1));
+        max_pfn = min_pfn;
+    }
+    // First pass: find the min/max address to size our metadata array
     for (regions) |r| {
+        const start_pfn = paToPfn(r.base & ~(PAGE_SIZE - 1));
+        if (start_pfn < min_pfn) min_pfn = start_pfn;
         const end = r.base + r.size;
         const aligned_end = end & ~(PAGE_SIZE - 1);
         const end_pfn = paToPfn(aligned_end);
@@ -86,13 +93,14 @@ pub fn init(regions: []const MemoryRegion) void {
     }
 
     // Ensure we don't overflow our metadata array
-    if (max_pfn > MAX_PAGES) {
+    if (max_pfn - min_pfn > MAX_PAGES) {
         // Clamp to MAX_PAGES - all pages beyond this are unusable
-        max_pfn = MAX_PAGES;
+        max_pfn = min_pfn + MAX_PAGES;
     }
 
     // Initialize all page metadata to free
-    for (0..max_pfn) |i| {
+    const tracked_pages = max_pfn - min_pfn;
+    for (0..tracked_pages) |i| {
         page_meta[i] = .{ .state = .free, .refcount = 0 };
     }
 
@@ -102,7 +110,10 @@ pub fn init(regions: []const MemoryRegion) void {
         const end = r.base + r.size;
         // Align to page boundaries
         const aligned_start = (start + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-        const aligned_end = end & ~(PAGE_SIZE - 1);
+        var aligned_end = end & ~(PAGE_SIZE - 1);
+        if (paToPfn(aligned_end) > max_pfn) {
+            aligned_end = pfnToPa(max_pfn);
+        }
         if (aligned_start >= aligned_end) continue;
 
         // Map the free range into kernel_root so we can write to it.
@@ -124,6 +135,7 @@ pub fn init(regions: []const MemoryRegion) void {
             ptr.* = free_head;
             free_head = page;
             total_free_pages += 1;
+            if (page == aligned_start) break;
         }
     }
 }

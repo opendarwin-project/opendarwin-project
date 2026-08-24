@@ -380,10 +380,167 @@ pub export fn unlink(_: [*:0]const u8) c_int {
 }
 
 pub const FILE = extern struct { fd: c_int = 2 };
+var stdin_file: FILE = .{ .fd = 0 };
 var stdout_file: FILE = .{ .fd = 1 };
 var stderr_file: FILE = .{ .fd = 2 };
+pub export var __stdinp: *FILE = &stdin_file;
 pub export var __stdoutp: *FILE = &stdout_file;
 pub export var __stderrp: *FILE = &stderr_file;
+
+pub export fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*FILE {
+    var flags: c_int = 0;
+    const m0 = mode[0];
+    if (m0 == 'r') {
+        flags = common.O_RDONLY;
+    } else if (m0 == 'w') {
+        flags = common.O_WRONLY | common.O_CREAT | common.O_TRUNC;
+    } else if (m0 == 'a') {
+        flags = common.O_WRONLY | common.O_CREAT | common.O_APPEND;
+    } else {
+        return null;
+    }
+
+    var i: usize = 1;
+    while (mode[i] != 0) : (i += 1) {
+        if (mode[i] == '+') {
+            flags = (flags & ~@as(c_int, common.O_ACCMODE)) | common.O_RDWR;
+        }
+    }
+
+    const fd = open(path, flags, 0o666);
+    if (fd < 0) return null;
+
+    const ptr = @import("malloc.zig").malloc(@sizeOf(FILE)) orelse {
+        _ = close(fd);
+        return null;
+    };
+    const fp: *FILE = @ptrCast(@alignCast(ptr));
+    fp.* = .{ .fd = fd };
+    return fp;
+}
+
+pub export fn fdopen(fd: c_int, _: [*:0]const u8) ?*FILE {
+    if (fd < 0) return null;
+    const ptr = @import("malloc.zig").malloc(@sizeOf(FILE)) orelse return null;
+    const fp: *FILE = @ptrCast(@alignCast(ptr));
+    fp.* = .{ .fd = fd };
+    return fp;
+}
+
+pub export fn fclose(stream: ?*FILE) c_int {
+    const fp = stream orelse {
+        common.errno = C.EINVAL;
+        return -1;
+    };
+    if (fp == &stdin_file or fp == &stdout_file or fp == &stderr_file) {
+        return 0;
+    }
+    const res = close(fp.fd);
+    @import("malloc.zig").free(fp);
+    return res;
+}
+
+pub export fn fread(ptr: [*]u8, size: usize, nmemb: usize, stream: ?*FILE) usize {
+    const fp = stream orelse return 0;
+    const total = size * nmemb;
+    if (total == 0) return 0;
+    const n = read(fp.fd, ptr, total);
+    if (n <= 0) return 0;
+    return @as(usize, @intCast(n)) / size;
+}
+
+pub export fn fwrite(ptr: [*]const u8, size: usize, nmemb: usize, stream: ?*FILE) usize {
+    const fp = stream orelse return 0;
+    const total = size * nmemb;
+    if (total == 0) return 0;
+    const n = write(fp.fd, ptr, total);
+    if (n <= 0) return 0;
+    return @as(usize, @intCast(n)) / size;
+}
+
+pub export fn fseek(stream: ?*FILE, offset: c_long, whence: c_int) c_int {
+    const fp = stream orelse return -1;
+    const res = lseek(fp.fd, @intCast(offset), whence);
+    return if (res < 0) -1 else 0;
+}
+
+pub export fn ftell(stream: ?*FILE) c_long {
+    const fp = stream orelse return -1;
+    const res = lseek(fp.fd, 0, common.SEEK_CUR);
+    return if (res < 0) -1 else @intCast(res);
+}
+
+pub export fn rewind(stream: ?*FILE) void {
+    _ = fseek(stream, 0, common.SEEK_SET);
+}
+
+pub export fn feof(_: ?*FILE) c_int {
+    return 0;
+}
+
+pub export fn ferror(_: ?*FILE) c_int {
+    return 0;
+}
+
+pub export fn clearerr(_: ?*FILE) void {}
+
+pub export fn fileno(stream: ?*FILE) c_int {
+    const fp = stream orelse return -1;
+    return fp.fd;
+}
+
+pub export fn fgetc(stream: ?*FILE) c_int {
+    var c: [1]u8 = undefined;
+    if (fread(&c, 1, 1, stream) == 1) return c[0];
+    return -1;
+}
+
+pub export fn getc(stream: ?*FILE) c_int {
+    return fgetc(stream);
+}
+
+pub export fn getchar() c_int {
+    return fgetc(__stdinp);
+}
+
+pub export fn fputc(c: c_int, stream: ?*FILE) c_int {
+    const ch: [1]u8 = .{@intCast(c & 0xff)};
+    if (fwrite(&ch, 1, 1, stream) == 1) return ch[0];
+    return -1;
+}
+
+pub export fn putc(c: c_int, stream: ?*FILE) c_int {
+    return fputc(c, stream);
+}
+
+pub export fn putchar(c: c_int) c_int {
+    return fputc(c, __stdoutp);
+}
+
+pub export fn puts(s: [*:0]const u8) c_int {
+    const len = C.cstrLen(s);
+    if (write(1, s, len) < 0) return -1;
+    if (write(1, "\n", 1) < 0) return -1;
+    return 0;
+}
+
+pub export fn fgets(buf: [*]u8, size: c_int, stream: ?*FILE) ?[*]u8 {
+    if (size <= 0) return null;
+    const max_chars: usize = @intCast(size - 1);
+    var i: usize = 0;
+    while (i < max_chars) {
+        const c = fgetc(stream);
+        if (c == -1) {
+            if (i == 0) return null;
+            break;
+        }
+        buf[i] = @intCast(c);
+        i += 1;
+        if (c == '\n') break;
+    }
+    buf[i] = 0;
+    return buf;
+}
 
 pub export fn printf(format: [*:0]const u8) c_int {
     return fprintf(null, format);
