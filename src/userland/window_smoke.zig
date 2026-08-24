@@ -24,6 +24,7 @@ const kCGSBackingBuffered: i32 = 2;
 const kCGSWindowLevelFloating: i32 = 3;
 
 extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
+extern fn usleep(usec: c_uint) c_int;
 
 extern fn CGSNewConnection(callback: ?*const anyopaque, connection: *CGSConnectionID) CGError;
 extern fn CGSReleaseConnection(connection: CGSConnectionID) CGError;
@@ -35,13 +36,48 @@ extern fn CGSSetWindowTitle(connection: CGSConnectionID, window: CGSWindowID, ti
 extern fn CGSSetWindowLevel(connection: CGSConnectionID, window: CGSWindowID, level: i32) CGError;
 extern fn CGSSetWindowAlpha(connection: CGSConnectionID, window: CGSWindowID, alpha: f32) CGError;
 extern fn CGSOrderWindow(connection: CGSConnectionID, window: CGSWindowID, mode: i32, relative_to: CGSWindowID) CGError;
-extern fn CGSGetWindowBackingStore(connection: CGSConnectionID, window: CGSWindowID, base: *?[*]u8, stride: *u32) CGError;
+extern fn CGSLockWindowBits(connection: CGSConnectionID, window: CGSWindowID, bounds_out: ?*CGRect, token_out: ?*i32, base_out: *[2]?[*]u8, rowBytes_out: *[2]i32) CGError;
+extern fn CGSUnlockWindowBits(connection: CGSConnectionID, window: CGSWindowID, damage_region: CGSRegionRef) CGError;
 extern fn CGSFlushWindow(connection: CGSConnectionID, window: CGSWindowID, region: CGSRegionRef) CGError;
+extern fn CGSFlushConnection(connection: CGSConnectionID) CGError;
 extern fn CGSGetDisplayBounds(display: u32, rect: *CGRect) CGError;
-extern fn CGSFindWindowByGeometry(x: f64, y: f64, window: *CGSWindowID) CGError;
+extern fn CGSGetCurrentCursorLocation(cid: CGSConnectionID, out: *CGPoint) CGError;
+extern fn CGSHideCursor(cid: CGSConnectionID) CGError;
+extern fn CGSShowCursor(cid: CGSConnectionID) CGError;
+extern fn CGSWarpCursorPosition(cid: CGSConnectionID, x: f64, y: f64) CGError;
+extern fn CGSFindWindowByGeometry(
+    cid: CGSConnectionID,
+    zero1: i32,
+    zero2: i32,
+    zero3: i32,
+    screen_point: *const CGPoint,
+    local_point_out: ?*CGPoint,
+    window_out: *CGSWindowID,
+    connection_out: ?*CGSConnectionID,
+) CGError;
 
 fn log(msg: []const u8) void {
     _ = write(1, msg.ptr, msg.len);
+}
+
+fn printInt(v: i64) void {
+    if (v == 0) {
+        log("0");
+        return;
+    }
+    var buf: [20]u8 = undefined;
+    var i: usize = buf.len;
+    var n: u64 = if (v < 0) @intCast(-v) else @intCast(v);
+    while (n > 0) {
+        i -= 1;
+        buf[i] = '0' + @as(u8, @intCast(n % 10));
+        n /= 10;
+    }
+    if (v < 0) {
+        i -= 1;
+        buf[i] = '-';
+    }
+    log(buf[i..]);
 }
 
 const Backing = struct {
@@ -120,13 +156,16 @@ fn chan(v: f32) u8 {
 }
 
 fn backingOf(cid: CGSConnectionID, wid: CGSWindowID, width: u32, height: u32) ?Backing {
-    var base: ?[*]u8 = null;
-    var stride: u32 = 0;
-    if (CGSGetWindowBackingStore(cid, wid, &base, &stride) != 0) return null;
-    return .{ .base = base orelse return null, .stride = stride, .width = width, .height = height };
+    var bounds: CGRect = .{};
+    var base: [2]?[*]u8 = .{ null, null };
+    var row_bytes: [2]i32 = .{ 0, 0 };
+    if (CGSLockWindowBits(cid, wid, &bounds, null, &base, &row_bytes) != 0) return null;
+    if (row_bytes[0] <= 0) return null;
+    return .{ .base = base[0] orelse return null, .stride = @intCast(row_bytes[0]), .width = width, .height = height };
 }
 
-fn makeWindow(cid: CGSConnectionID, x: f32, y: f32, width: u32, height: u32, title: [*:0]const u8) ?CGSWindowID {
+fn makeWindow(cid: CGSConnectionID, x: f32, y: f32, width: u32, height: u32, title: ?[*:0]const u8) ?CGSWindowID {
+    _ = title;
     var region: CGSRegionRef = null;
     const rect = CGRect{ .size = .{ .width = @floatFromInt(width), .height = @floatFromInt(height) } };
     if (CGSNewRegionWithRect(&rect, &region) != 0) return null;
@@ -134,7 +173,6 @@ fn makeWindow(cid: CGSConnectionID, x: f32, y: f32, width: u32, height: u32, tit
 
     var wid: CGSWindowID = 0;
     if (CGSNewWindow(cid, kCGSBackingBuffered, x, y, region, &wid) != 0) return null;
-    _ = CGSSetWindowTitle(cid, wid, title);
     _ = CGSOrderWindow(cid, wid, 1, 0);
     return wid;
 }
@@ -161,8 +199,11 @@ pub fn main() u8 {
         return 20;
     };
     _ = CGSSetWindowAlpha(cid, bg, 0.6);
-    if (backingOf(cid, bg, bg_w, bg_h)) |b| fill(b, 0xc0, 0x60, 0x20) else {
-        log("CGSGetWindowBackingStore(background) failed\n");
+    if (backingOf(cid, bg, bg_w, bg_h)) |b| {
+        fill(b, 0xc0, 0x60, 0x20);
+        _ = CGSUnlockWindowBits(cid, bg, null);
+    } else {
+        log("CGSLockWindowBits(background) failed\n");
         return 21;
     }
 
@@ -175,15 +216,29 @@ pub fn main() u8 {
     };
     _ = CGSSetWindowLevel(cid, fg, kCGSWindowLevelFloating);
     const fb = backingOf(cid, fg, fg_w, fg_h) orelse {
-        log("CGSGetWindowBackingStore(triangle) failed\n");
+        log("CGSLockWindowBits(triangle) failed\n");
         return 23;
     };
     fill(fb, 0x0f, 0x0a, 0x0a);
     drawTriangle(fb);
+    _ = CGSUnlockWindowBits(cid, fg, null);
+
+    // Verify cursor APIs
+    var cur_loc: CGPoint = .{};
+    if (CGSGetCurrentCursorLocation(cid, &cur_loc) != 0) {
+        log("CGSGetCurrentCursorLocation failed\n");
+        return 28;
+    }
+    _ = CGSHideCursor(cid);
+    _ = CGSShowCursor(cid);
+    _ = CGSWarpCursorPosition(cid, 200.0, 200.0);
 
     // The floating window must win the hit test where the two overlap.
     var hit: CGSWindowID = 0;
-    if (CGSFindWindowByGeometry(200, 200, &hit) != 0 or hit != fg) {
+    const pt = CGPoint{ .x = 200, .y = 200 };
+    var local_pt: CGPoint = .{};
+    var hit_cid: CGSConnectionID = 0;
+    if (CGSFindWindowByGeometry(cid, 0, 0, 0, &pt, &local_pt, &hit, &hit_cid) != 0 or hit != fg) {
         log("CGSFindWindowByGeometry picked the wrong window\n");
         return 30;
     }
@@ -193,8 +248,21 @@ pub fn main() u8 {
         return 31;
     }
 
-    _ = CGSReleaseWindow(cid, bg);
-    _ = CGSReleaseWindow(cid, fg);
-    log("SkyLight window composite smoke passed\n");
+    log("SkyLight window composite passed — entering interactive cursor loop\n");
+    var last_x: f64 = -1;
+    var last_y: f64 = -1;
+    var loop_count: usize = 0;
+    while (true) {
+        _ = CGSFlushConnection(cid);
+        var cur: CGPoint = .{};
+        if (CGSGetCurrentCursorLocation(cid, &cur) == 0) {
+            if (cur.x != last_x or cur.y != last_y) {
+                last_x = cur.x;
+                last_y = cur.y;
+            }
+        }
+        loop_count += 1;
+        _ = usleep(2000);
+    }
     return 0;
 }

@@ -3,6 +3,7 @@
 const registry = @import("registry.zig");
 const pci_device = @import("pci_device.zig");
 const virtio_gpu_fb = @import("drivers/virtio_gpu_fb.zig");
+const iohid_system = @import("drivers/iohid_system.zig");
 const provider_info = @import("../device/provider.zig");
 const uart = @import("../drivers/uart.zig");
 const slab = @import("../mm/slab.zig");
@@ -10,6 +11,7 @@ const slab = @import("../mm/slab.zig");
 pub fn init() void {
     registry.init();
     virtio_gpu_fb.register();
+    iohid_system.initAndRegister();
 }
 
 /// Publish virtio-mmio display nubs for VirtioGpuFramebuffer.

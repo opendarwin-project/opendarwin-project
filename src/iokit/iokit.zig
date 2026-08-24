@@ -27,6 +27,9 @@ const MSG_OBJECT_RELEASE: u32 = 2904;
 const kIOFBSelectGetInfo: u32 = 0;
 const kIOFBSelectPresent: u32 = 1;
 
+const kIOHIDSelectGetPointState: u32 = 0;
+const kIOHIDSelectPollEvents: u32 = 1;
+
 pub const mach_port_t = u32;
 pub const io_object_t = mach_port_t;
 pub const io_service_t = io_object_t;
@@ -334,6 +337,40 @@ pub export fn IOFramebufferOpenDefault(connect_out: *io_connect_t, info_out: ?*I
 
 pub export fn IOFramebufferPresent(connect: io_connect_t) kern_return_t {
     return IOConnectTrap0(connect, kIOFBSelectPresent);
+}
+
+pub const IOHIDPointState = extern struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    max_x: u32 = 32767,
+    max_y: u32 = 32767,
+    rel_dx: i32 = 0,
+    rel_dy: i32 = 0,
+    buttons: u32 = 0,
+    device_type: u32 = 0,
+    abs_updated: u32 = 0,
+};
+
+pub export fn IOHIDSystemOpenDefault(connect_out: *io_connect_t) kern_return_t {
+    var master: mach_port_t = 0;
+    if (IOMasterPort(0, &master) != KERN_SUCCESS) return kIOReturnError;
+    const matching = IOServiceMatching("IOHIDSystem") orelse return kIOReturnError;
+    const service = IOServiceGetMatchingService(master, matching);
+    if (service == 0) return kIOReturnError;
+    var connect: io_connect_t = 0;
+    const okr = IOServiceOpen(service, 0, 0, &connect);
+    _ = IOObjectRelease(service);
+    if (okr != KERN_SUCCESS) return okr;
+    connect_out.* = connect;
+    return KERN_SUCCESS;
+}
+
+pub export fn IOHIDGetPointState(connect: io_connect_t, state: *IOHIDPointState) kern_return_t {
+    return IOConnectTrap1(connect, kIOHIDSelectGetPointState, @intFromPtr(state));
+}
+
+pub export fn IOHIDPollEvents(connect: io_connect_t) kern_return_t {
+    return IOConnectTrap0(connect, kIOHIDSelectPollEvents);
 }
 
 extern fn malloc(size: usize) ?*anyopaque;

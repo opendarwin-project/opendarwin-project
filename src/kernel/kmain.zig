@@ -9,6 +9,7 @@ const macho = @import("loader/macho.zig");
 const gic = @import("drivers/gic.zig");
 const virtio_blk = @import("drivers/virtio_blk.zig");
 const virtio_gpu = @import("drivers/virtio_gpu.zig");
+const virtio_input = @import("drivers/virtio_input.zig");
 const timer = @import("drivers/timer.zig");
 const sched = @import("proc/sched.zig");
 const smp = @import("smp.zig");
@@ -369,7 +370,7 @@ export fn kmain() callconv(.c) noreturn {
     if (dtb_found) |found| {
         if (found.uart_base) |base| uart.init(base);
         if (found.gic_dist_base != null and found.gic_cpu_base != null) {
-            gic.setBases(found.gic_dist_base.?, found.gic_cpu_base.?);
+            gic.setBases(found.gic_dist_base.?, found.gic_cpu_base.?, found.gic_is_v3);
         }
         uart.print("opendarwin: devicetree discovery ok\n");
     } else {
@@ -400,6 +401,12 @@ export fn kmain() callconv(.c) noreturn {
             uart.print("opendarwin: virtio-gpu candidates stashed for IOKit\n");
         } else {
             uart.print("opendarwin: no virtio-gpu candidates\n");
+        }
+
+        // Input candidates (tablet / mouse / keyboard)
+        virtio_input.stashCandidates(found.virtio_input_matches[0..found.virtio_input_count]);
+        if (virtio_input.stashedCandidates().len > 0) {
+            _ = virtio_input.init(virtio_input.stashedCandidates());
         }
     }
     gic.init();

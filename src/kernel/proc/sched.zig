@@ -13,6 +13,7 @@ const smp = @import("../smp.zig");
 const pac = @import("../arch/aarch64/pac.zig");
 const SpinLock = @import("../sync/spinlock.zig");
 const timer = @import("../drivers/timer.zig");
+const uart = @import("../drivers/uart.zig");
 
 const MAX_TASKS = 32;
 
@@ -32,6 +33,22 @@ const Slot = struct {
 const NO_ULOCK_WAIT: u64 = 0;
 const NO_SLEEP_WAIT: u64 = 0;
 const NO_FD_WAIT: u64 = ~@as(u64, 0);
+
+/// Exceptions taken to EL1 (SVC, IRQ, etc.) mask DAIF.I automatically per
+/// the AArch64 architecture, and it is never re-enabled implicitly. Kernel
+/// code that spins waiting on state only the timer ISR can update (sleep
+/// deadlines, ulock wakeups from other cores relying on the tick to also
+/// requeue) must explicitly re-enable IRQs around the spin, or the wakeup
+/// can never be delivered - this was observed to hang indefinitely under
+/// HVF, which enforces the masking strictly (unlike the TCG path this
+/// bug shipped against, which happened to let ticks through anyway).
+fn enableIrq() void {
+    asm volatile ("msr daifclr, #2" ::: .{ .memory = true });
+}
+
+fn disableIrq() void {
+    asm volatile ("msr daifset, #2" ::: .{ .memory = true });
+}
 
 var slots: [MAX_TASKS]Slot = undefined;
 var count: usize = 0;
@@ -108,11 +125,20 @@ pub fn blockCurrentOnUlock(core_id: u64, frame: *context.Frame, addr: u64) bool 
     }
     slots[cur].ulock_addr = addr;
     slots_lock.unlock();
+    // Exceptions taken to EL1 (including this syscall's SVC entry) mask
+    // DAIF.I automatically per the architecture, and nothing re-enables it
+    // on the way in. Spinning here with IRQs still masked means the timer
+    // tick that would ever wake us can never be taken - explicitly
+    // unmasking around the spin (restored before returning) is required so
+    // forward progress doesn't depend on WFE/WFI's less consistent
+    // wake-on-masked-interrupt behavior under HVF.
+    enableIrq();
     while (true) {
-        asm volatile ("wfe");
+        asm volatile ("wfi");
         slots_lock.lock();
         if (slots[cur].ulock_addr == NO_ULOCK_WAIT) {
             slots_lock.unlock();
+            disableIrq();
             frame.x[0] = 0;
             return true;
         }
@@ -146,17 +172,20 @@ pub fn blockCurrentOnUlockUntil(core_id: u64, frame: *context.Frame, addr: u64, 
     }
     slots[cur].ulock_addr = addr;
     slots_lock.unlock();
+    enableIrq();
     while (true) {
-        asm volatile ("wfe");
+        asm volatile ("wfi");
         slots_lock.lock();
         if (slots[cur].ulock_addr == NO_ULOCK_WAIT) {
             slots_lock.unlock();
+            disableIrq();
             frame.x[0] = 0;
             return true;
         }
         if (timer.nowMs() >= deadline_ms) {
             slots[cur].ulock_addr = NO_ULOCK_WAIT;
             slots_lock.unlock();
+            disableIrq();
             frame.x[0] = 0;
             return true;
         }
@@ -190,13 +219,16 @@ pub fn blockCurrentUntil(core_id: u64, frame: *context.Frame, deadline_ms: u64) 
         return true;
     }
     slots_lock.unlock();
-    while (true) {
-        asm volatile ("wfe");
-        if (timer.nowMs() >= deadline_ms) {
-            frame.x[0] = 0;
-            return true;
-        }
+    // No runnable peer: park here until the deadline. Unmask IRQs so the
+    // periodic timer can advance nowMs() (SVC entry masks DAIF.I), then
+    // busy-poll - wfi is unreliable under HVF-trapped WFI semantics.
+    enableIrq();
+    while (timer.nowMs() < deadline_ms) {
+        asm volatile ("" ::: .{ .memory = true });
     }
+    disableIrq();
+    frame.x[0] = 0;
+    return true;
 }
 
 /// Wake up to `max_count` tasks waiting on the given user address.
@@ -223,7 +255,9 @@ pub fn blockCurrentOnFd(core_id: u64, frame: *context.Frame, fd: u64) bool {
     _ = core_id;
     _ = frame;
     _ = fd;
-    asm volatile ("wfe");
+    enableIrq();
+    asm volatile ("wfi");
+    disableIrq();
     return true;
 }
 
@@ -308,10 +342,10 @@ pub fn setInitialRegister(idx: usize, reg: usize, value: u64) void {
 
 /// Caller holds slots_lock.
 fn nextAliveForCore(core_id: u64, from: usize) ?usize {
-    if (count == 0) return null;
+    if (count <= 1) return null;
     var i = from;
     var checked: usize = 0;
-    while (checked < count) : (checked += 1) {
+    while (checked < count - 1) : (checked += 1) {
         i = (i + 1) % count;
         if (slots[i].alive and slots[i].owner_core == core_id) return i;
     }

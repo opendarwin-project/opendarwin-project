@@ -22,8 +22,6 @@
 //! objects, and CGSFlushWindow still ends in a scanout present.  Splitting the
 //! server into its own task behind Mach RPC is a later step (see TODO.md);
 //! the compositor core is already written to make that mechanical.
-//!
-//! Deviations from Apple's ABI are marked "OpenDarwin extension".
 
 const compositor = @import("compositor.zig");
 
@@ -61,9 +59,24 @@ const IOFramebufferInfo = extern struct {
     size: u64 = 0,
 };
 
+const IOHIDPointState = extern struct {
+    x: u32 = 0,
+    y: u32 = 0,
+    max_x: u32 = 32767,
+    max_y: u32 = 32767,
+    rel_dx: i32 = 0,
+    rel_dy: i32 = 0,
+    buttons: u32 = 0,
+    device_type: u32 = 0,
+    abs_updated: u32 = 0,
+};
+
 extern fn IOFramebufferOpenDefault(connect_out: *io_connect_t, info_out: ?*IOFramebufferInfo) kern_return_t;
 extern fn IOConnectMapMemory(connect: io_connect_t, memoryType: u32, intoTask: u32, atAddress: *u64, ofSize: *u64, options: u32) kern_return_t;
 extern fn IOFramebufferPresent(connect: io_connect_t) kern_return_t;
+extern fn IOHIDSystemOpenDefault(connect_out: *io_connect_t) kern_return_t;
+extern fn IOHIDGetPointState(connect: io_connect_t, state: *IOHIDPointState) kern_return_t;
+extern fn IOHIDPollEvents(connect: io_connect_t) kern_return_t;
 extern fn IOServiceClose(connect: io_connect_t) kern_return_t;
 extern fn mach_task_self() u32;
 extern fn malloc(size: usize) ?*anyopaque;
@@ -79,6 +92,13 @@ const Server = struct {
     connect: io_connect_t = 0,
     fb_open: bool = false,
     fb_failed: bool = false,
+    hid_connect: io_connect_t = 0,
+    hid_open: bool = false,
+    hid_failed: bool = false,
+    cursor_pos: CGPoint = .{ .x = 100, .y = 100 },
+    cursor_visible: bool = true,
+    buttons: u32 = 0,
+    dirty: bool = true,
     /// Headless fallback surface used when no IOFramebuffer is published, so
     /// clients can still render and be composited (mirrors Prism's headless
     /// Darwin display).
@@ -117,6 +137,55 @@ fn ensureScanout() bool {
         .order = .bgra,
     };
     return true;
+}
+
+fn ensureHid() bool {
+    if (server.hid_open) return true;
+    if (server.hid_failed) return false;
+    var connect: io_connect_t = 0;
+    if (IOHIDSystemOpenDefault(&connect) != 0 or connect == 0) {
+        server.hid_failed = true;
+        return false;
+    }
+    server.hid_connect = connect;
+    server.hid_open = true;
+    return true;
+}
+
+fn updateCursorFromHid() bool {
+    if (!ensureHid()) return false;
+    _ = IOHIDPollEvents(server.hid_connect);
+    var state: IOHIDPointState = .{};
+    if (IOHIDGetPointState(server.hid_connect, &state) != 0) return false;
+
+    var changed = false;
+    if (server.scanout) |s| {
+        if (state.abs_updated != 0) {
+            const max_x = if (state.max_x > 0) state.max_x else 32767;
+            const max_y = if (state.max_y > 0) state.max_y else 32767;
+            const new_x = (@as(f64, @floatFromInt(state.x)) * @as(f64, @floatFromInt(s.width))) / @as(f64, @floatFromInt(max_x));
+            const new_y = (@as(f64, @floatFromInt(state.y)) * @as(f64, @floatFromInt(s.height))) / @as(f64, @floatFromInt(max_y));
+            if (new_x != server.cursor_pos.x or new_y != server.cursor_pos.y) {
+                server.cursor_pos.x = new_x;
+                server.cursor_pos.y = new_y;
+                changed = true;
+            }
+        }
+        if (state.rel_dx != 0 or state.rel_dy != 0) {
+            const new_x = @max(0.0, @min(@as(f64, @floatFromInt(s.width - 1)), server.cursor_pos.x + @as(f64, @floatFromInt(state.rel_dx))));
+            const new_y = @max(0.0, @min(@as(f64, @floatFromInt(s.height - 1)), server.cursor_pos.y + @as(f64, @floatFromInt(state.rel_dy))));
+            if (new_x != server.cursor_pos.x or new_y != server.cursor_pos.y) {
+                server.cursor_pos.x = new_x;
+                server.cursor_pos.y = new_y;
+                changed = true;
+            }
+        }
+    }
+    if (server.buttons != state.buttons) {
+        server.buttons = state.buttons;
+        changed = true;
+    }
+    return changed;
 }
 
 fn presentScanout() CGError {
@@ -283,8 +352,8 @@ pub export fn CGSSetWindowAlpha(connection: CGSConnectionID, window: CGSWindowID
     return kCGErrorSuccess;
 }
 
-/// Historic CGS entry point; takes a UTF-8 C string in our build because we
-/// have no CoreFoundation yet (OpenDarwin extension: Apple takes a CFString).
+/// Sets the window's title string property (calls through to
+/// CGSSetWindowProperty with kCGSWindowTitle).
 pub export fn CGSSetWindowTitle(connection: CGSConnectionID, window: CGSWindowID, title: [*:0]const u8) callconv(.c) CGError {
     _ = connection;
     var n: usize = 0;
@@ -317,40 +386,104 @@ pub export fn CGSGetWindowBounds(connection: CGSConnectionID, window: CGSWindowI
     return kCGErrorSuccess;
 }
 
-/// OpenDarwin extension standing in for CGWindowContextCreate / IOSurface:
-/// hands the client a direct pointer to the window's server-side backing
-/// store (BGRA8, `stride_out` bytes per row) which becomes visible on the next
-/// CGSFlushWindow.
-pub export fn CGSGetWindowBackingStore(
+/// Locks the window's backing store for drawing, providing direct access to the
+/// base address and row bytes (stride).
+pub export fn CGSLockWindowBits(
     connection: CGSConnectionID,
     window: CGSWindowID,
-    base_out: *?[*]u8,
-    stride_out: *u32,
+    bounds_out: ?*CGRect,
+    token_out: ?*i32,
+    base_out: [*]?[*]u8,
+    rowBytes_out: [*]i32,
 ) callconv(.c) CGError {
     _ = connection;
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
     const b = w.backing orelse return kCGErrorFailure;
-    base_out.* = b.ptr;
-    stride_out.* = w.backing_stride;
+    if (bounds_out) |r| {
+        const f = w.frame();
+        r.* = .{
+            .origin = .{ .x = @floatFromInt(f.x), .y = @floatFromInt(f.y) },
+            .size = .{ .width = @floatFromInt(f.width), .height = @floatFromInt(f.height) },
+        };
+    }
+    if (token_out) |t| t.* = 0;
+    base_out[0] = b.ptr;
+    base_out[1] = null;
+    rowBytes_out[0] = @intCast(w.backing_stride);
+    rowBytes_out[1] = 0;
     return kCGErrorSuccess;
 }
 
-/// OpenDarwin extension: declare the byte order the client writes into its
-/// backing store (0 = BGRA, 1 = RGBA).  Prism's software rasterizer produces
-/// RGBA, real scanout wants BGRA; telling the compositor avoids a copy pass.
-pub export fn CGSSetWindowPixelOrder(connection: CGSConnectionID, window: CGSWindowID, order: u32) callconv(.c) CGError {
-    _ = connection;
-    const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
-    w.backing_order = if (order == 1) .rgba else .bgra;
+pub export fn CGSLockWindowRectBits(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    bounds_out: ?*CGRect,
+    token_out: ?*i32,
+    clip_rect: ?*const CGRect,
+    reserved: i32,
+    base_out: [*]?[*]u8,
+    rowBytes_out: [*]i32,
+) callconv(.c) CGError {
+    _ = .{ clip_rect, reserved };
+    return CGSLockWindowBits(connection, window, bounds_out, token_out, base_out, rowBytes_out);
+}
+
+pub export fn CGSUnlockWindowBits(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    damage_region: CGSRegionRef,
+) callconv(.c) CGError {
+    _ = .{ connection, window, damage_region };
     return kCGErrorSuccess;
 }
 
-/// OpenDarwin extension: NSWindow-style decoration on/off (Apple's frame is
-/// drawn client-side by AppKit; we have no AppKit, so the server draws it).
-pub export fn CGSSetWindowDecorated(connection: CGSConnectionID, window: CGSWindowID, decorated: bool) callconv(.c) CGError {
-    _ = connection;
+pub export fn CGSUnlockWindowRectBits(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    damage_rect: ?*const CGRect,
+) callconv(.c) CGError {
+    _ = .{ connection, window, damage_rect };
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSSetWindowTags(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    tags: *const [2]u32,
+    max_tag_size: usize,
+) callconv(.c) CGError {
+    _ = .{ connection, max_tag_size };
     const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
-    w.decorated = decorated;
+    if (tags[0] & 1 != 0) {
+        w.decorated = true;
+    }
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSClearWindowTags(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    tags: *const [2]u32,
+    max_tag_size: usize,
+) callconv(.c) CGError {
+    _ = .{ connection, max_tag_size };
+    const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
+    if (tags[0] & 1 != 0) {
+        w.decorated = false;
+    }
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSGetWindowTags(
+    connection: CGSConnectionID,
+    window: CGSWindowID,
+    tags: *[2]u32,
+    max_tag_size: usize,
+) callconv(.c) CGError {
+    _ = .{ connection, max_tag_size };
+    const w = server.cg.find(window) orelse return kCGErrorIllegalArgument;
+    tags[0] = if (w.decorated) 1 else 0;
+    tags[1] = 0;
     return kCGErrorSuccess;
 }
 
@@ -367,7 +500,17 @@ pub export fn CGSFlushWindow(connection: CGSConnectionID, window: CGSWindowID, r
 pub export fn CGSFlushConnection(connection: CGSConnectionID) callconv(.c) CGError {
     _ = connection;
     if (!ensureScanout()) return kCGErrorNoneAvailable;
+    const hid_changed = updateCursorFromHid();
+    if (!server.dirty and !hid_changed) return kCGErrorSuccess;
+    server.dirty = false;
     _ = server.cg.composite(server.scanout.?);
+    if (server.cursor_visible) {
+        compositor.drawCursor(
+            server.scanout.?,
+            @intFromFloat(server.cursor_pos.x),
+            @intFromFloat(server.cursor_pos.y),
+        );
+    }
     return presentScanout();
 }
 
@@ -402,9 +545,89 @@ pub export fn CGSGetScreenRectForWindow(connection: CGSConnectionID, window: CGS
     return CGSGetWindowBounds(connection, window, rect);
 }
 
-/// OpenDarwin extension used by the smoke tests: topmost window under a point.
-pub export fn CGSFindWindowByGeometry(x: f64, y: f64, window_out: *CGSWindowID) callconv(.c) CGError {
-    const hit = server.cg.hitTest(@intFromFloat(x), @intFromFloat(y)) orelse return kCGErrorFailure;
+/// Find the topmost window under a given screen point.
+pub export fn CGSFindWindowByGeometry(
+    cid: CGSConnectionID,
+    zero1: i32,
+    zero2: i32,
+    zero3: i32,
+    screen_point: *const CGPoint,
+    local_point_out: ?*CGPoint,
+    window_out: *CGSWindowID,
+    connection_out: ?*CGSConnectionID,
+) callconv(.c) CGError {
+    _ = .{ cid, zero1, zero2, zero3 };
+    const px: i32 = @intFromFloat(screen_point.x);
+    const py: i32 = @intFromFloat(screen_point.y);
+    const hit = server.cg.hitTest(px, py) orelse return kCGErrorFailure;
     window_out.* = hit.wid;
+    if (connection_out) |c| c.* = hit.cid;
+    if (local_point_out) |lp| {
+        const f = hit.frame();
+        lp.* = .{
+            .x = screen_point.x - @as(f64, @floatFromInt(f.x)),
+            .y = screen_point.y - @as(f64, @floatFromInt(f.y)),
+        };
+    }
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSFindWindow(
+    cid: CGSConnectionID,
+    zero1: i32,
+    zero2: i32,
+    screen_point: *const CGPoint,
+    local_point_out: ?*CGPoint,
+    window_out: *CGSWindowID,
+) callconv(.c) CGError {
+    return CGSFindWindowByGeometry(cid, 0, zero1, zero2, screen_point, local_point_out, window_out, null);
+}
+
+pub export fn CGSFindWindowAndOwner(
+    cid: CGSConnectionID,
+    zero1: i32,
+    zero2: i32,
+    screen_point: *const CGPoint,
+    local_point_out: ?*CGPoint,
+    window_out: *CGSWindowID,
+    connection_out: ?*CGSConnectionID,
+) callconv(.c) CGError {
+    return CGSFindWindowByGeometry(cid, 0, zero1, zero2, screen_point, local_point_out, window_out, connection_out);
+}
+
+// ---------------------------------------------------------------------------
+// Cursor
+// ---------------------------------------------------------------------------
+
+pub export fn CGSGetCurrentCursorLocation(cid: CGSConnectionID, out: *CGPoint) callconv(.c) CGError {
+    _ = cid;
+    _ = updateCursorFromHid();
+    out.* = server.cursor_pos;
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSHideCursor(cid: CGSConnectionID) callconv(.c) CGError {
+    _ = cid;
+    server.cursor_visible = false;
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSShowCursor(cid: CGSConnectionID) callconv(.c) CGError {
+    _ = cid;
+    server.cursor_visible = true;
+    return kCGErrorSuccess;
+}
+
+pub export fn CGSObscureCursor(cid: CGSConnectionID) callconv(.c) CGError {
+    return CGSHideCursor(cid);
+}
+
+pub export fn CGSRevealCursor(cid: CGSConnectionID) callconv(.c) CGError {
+    return CGSShowCursor(cid);
+}
+
+pub export fn CGSWarpCursorPosition(cid: CGSConnectionID, x: f64, y: f64) callconv(.c) CGError {
+    _ = cid;
+    server.cursor_pos = .{ .x = x, .y = y };
     return kCGErrorSuccess;
 }

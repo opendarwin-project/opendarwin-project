@@ -414,9 +414,9 @@ pub fn main(init: std.process.Init) !void {
     const manifest_name: [12]u8 = blobName("MANIFEST", .{});
     try blobs.append(gpa, .{ .name = manifest_name, .data = std.mem.asBytes(&manifest) });
 
-    std.debug.print("writing {d} blobs to {s}...\n", .{ blobs.items.len, out_image });
-    try writeFatImage(gpa, io, out_image, blobs.items);
-    std.debug.print("done\n", .{});
+    std.log.debug("writing {d} blobs to {s}...\n", .{ blobs.items.len, out_image });
+    try writeFatImage(io, gpa, out_image, blobs.items);
+    std.log.debug("done\n", .{});
 }
 
 const Import = struct { ordinal: u8, name: []const u8 };
@@ -482,7 +482,7 @@ const CLUSTER_BYTES = SECTOR * SECTORS_PER_CLUSTER;
 const RESERVED_SECTORS = 32;
 const NUM_FATS = 2;
 
-fn writeFatImage(gpa: std.mem.Allocator, io: std.Io, out_path: []const u8, blobs: []const Blob) !void {
+fn writeFatImage(io: std.Io, gpa: std.mem.Allocator, out_path: []const u8, blobs: []const Blob) !void {
     var total_clusters_needed: u64 = 1; // root dir
     for (blobs) |b| total_clusters_needed += (b.data.len + CLUSTER_BYTES - 1) / CLUSTER_BYTES;
     // Comfortable slack for FAT bookkeeping + headroom.

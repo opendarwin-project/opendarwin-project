@@ -197,6 +197,8 @@ def main(argv):
     specs = []
     if argv[2] == "--multi":
         for spec in argv[3:]:
+            if spec.startswith("--main-name="):
+                continue
             name, src = spec.split("=", 1)
             specs.append((name, src))
     else:

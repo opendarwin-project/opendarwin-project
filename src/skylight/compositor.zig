@@ -230,6 +230,13 @@ pub const Compositor = struct {
         return painted;
     }
 
+    /// Composite all windows and overlay the arrow cursor at `(cursor_x, cursor_y)`.
+    pub fn compositeWithCursor(self: *Compositor, target: Surface, cursor_x: i32, cursor_y: i32) u32 {
+        const n = self.composite(target);
+        drawCursor(target, cursor_x, cursor_y);
+        return n;
+    }
+
     fn paintWindow(self: *Compositor, target: Surface, w: *const Window) void {
         if (w.decorated) {
             const f = w.frame();
@@ -269,6 +276,73 @@ fn store(target: Surface, off: usize, c: Color) void {
         },
     }
     p[3] = c.a;
+}
+
+pub const cursor_width = 12;
+pub const cursor_height = 18;
+
+// Classic macOS arrow pointer: 0 = transparent, 1 = black border, 2 = white interior, 3 = shadow
+pub const default_cursor_pixels = [cursor_height][cursor_width]u8{
+    [_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0 },
+    [_]u8{ 1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 0 },
+    [_]u8{ 1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0 },
+    [_]u8{ 1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0 },
+    [_]u8{ 1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0 },
+    [_]u8{ 1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0 },
+    [_]u8{ 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0 },
+    [_]u8{ 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0 },
+    [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+pub fn drawCursor(target: Surface, cursor_x: i32, cursor_y: i32) void {
+    const black = Color{ .b = 0x00, .g = 0x00, .r = 0x00, .a = 0xff };
+    const white = Color{ .b = 0xff, .g = 0xff, .r = 0xff, .a = 0xff };
+    const shadow = Color{ .b = 0x00, .g = 0x00, .r = 0x00, .a = 0x60 };
+
+    for (0..cursor_height) |cy| {
+        const y = cursor_y + @as(i32, @intCast(cy));
+        if (y < 0 or y >= target.height) continue;
+        const dst_base = @as(usize, @intCast(y)) * target.stride;
+
+        for (0..cursor_width) |cx| {
+            const x = cursor_x + @as(i32, @intCast(cx));
+            if (x < 0 or x >= target.width) continue;
+            const code = default_cursor_pixels[cy][cx];
+            if (code == 0) continue;
+
+            const c = switch (code) {
+                1 => black,
+                2 => white,
+                3 => shadow,
+                else => continue,
+            };
+
+            const dst_off = dst_base + @as(usize, @intCast(x)) * 4;
+            if (c.a == 255) {
+                store(target, dst_off, c);
+            } else {
+                const d = target.bytes[dst_off..][0..4];
+                const dc = switch (target.order) {
+                    .bgra => Color{ .b = d[0], .g = d[1], .r = d[2] },
+                    .rgba => Color{ .r = d[0], .g = d[1], .b = d[2] },
+                };
+                store(target, dst_off, .{
+                    .b = mix(c.b, dc.b, c.a),
+                    .g = mix(c.g, dc.g, c.a),
+                    .r = mix(c.r, dc.r, c.a),
+                });
+            }
+        }
+    }
 }
 
 pub fn fill(target: Surface, r: Rect, c: Color) void {
@@ -475,4 +549,21 @@ test "rgba clients are swizzled into a bgra scanout" {
     _ = cg.composite(testSurface(&buf, 2, 2));
     try std.testing.expectEqual(@as(u8, 0xcc), buf[0]); // B first on scanout
     try std.testing.expectEqual(@as(u8, 0xaa), buf[2]);
+}
+
+test "cursor draws black border and white fill over desktop" {
+    var buf: [16 * 16 * 4]u8 = undefined;
+    var cg = Compositor{};
+    const t = testSurface(&buf, 16, 16);
+    _ = cg.compositeWithCursor(t, 2, 2);
+    // (2, 2) is top-left tip of arrow -> black border (0, 0, 0)
+    const tip_off = (2 * 16 + 2) * 4;
+    try std.testing.expectEqual(@as(u8, 0), buf[tip_off + 0]);
+    try std.testing.expectEqual(@as(u8, 0), buf[tip_off + 1]);
+    try std.testing.expectEqual(@as(u8, 0), buf[tip_off + 2]);
+    // (3, 4) is inside arrow -> white interior (255, 255, 255)
+    const inner_off = (4 * 16 + 3) * 4;
+    try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 0]);
+    try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 1]);
+    try std.testing.expectEqual(@as(u8, 255), buf[inner_off + 2]);
 }

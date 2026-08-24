@@ -31,7 +31,14 @@ const DTB_MAP_WINDOW: u64 = 0x10_0000; // 1MB
 pub const Found = struct {
     uart_base: ?u64 = null,
     gic_dist_base: ?u64 = null,
+    /// GICv2: CPU-interface (GICC) MMIO base. GICv3: per-CPU redistributor
+    /// (GICR) RD_base. `gic_is_v3` disambiguates.
     gic_cpu_base: ?u64 = null,
+    /// True when the discovered interrupt controller is a GICv3 (matched
+    /// driver "gicv3"). HVF only exposes GICv3, so this path is required to
+    /// receive the timer interrupt (and thus honor any timed wait) under
+    /// Apple's hypervisor.
+    gic_is_v3: bool = false,
     /// Physical RAM base and size discovered from the /memory node.
     memory_base: ?u64 = null,
     memory_size: ?u64 = null,
@@ -46,6 +53,9 @@ pub const Found = struct {
     /// block; `Virtio.start()` checks DEVICE_ID).
     virtio_gpu_matches: [MAX_VIRTIO_CANDIDATES]provider.Info = undefined,
     virtio_gpu_count: usize = 0,
+    /// virtio-mmio transport slots to probe as virtio-input (same DTB nodes).
+    virtio_input_matches: [MAX_VIRTIO_CANDIDATES]provider.Info = undefined,
+    virtio_input_count: usize = 0,
     /// ECAM base from the PCI host bridge, when present (unused for GPU bind).
     pci_ecam_base: ?u64 = null,
 };
@@ -98,6 +108,9 @@ pub fn discover() ?Found {
     }
 
     if (reg.find(.intc) catch null) |m| {
+        if (m.driver) |drv| {
+            if (std.mem.eql(u8, drv, "gicv3")) found.gic_is_v3 = true;
+        }
         if (m.mmioAt(0)) |dist| {
             mmu.mapExtra(dist.base, dist.size, .{ .writable = true, .executable = false, .user = false, .device = true });
             found.gic_dist_base = dist.base;
@@ -124,13 +137,15 @@ pub fn discover() ?Found {
         uart.print("devicetree: virtio-mmio candidates found\n");
     }
 
-    // conduit has no .display class; virtio-gpu is the same virtio,mmio
-    // transports as block. Probe DEVICE_ID in the driver, not here.
-    const gpu_n = found.virtio_blk_count;
-    if (gpu_n > 0) {
-        @memcpy(found.virtio_gpu_matches[0..gpu_n], found.virtio_blk_matches[0..gpu_n]);
-        found.virtio_gpu_count = gpu_n;
-        uart.print("devicetree: virtio-gpu candidates found\n");
+    // conduit has no .display or .input class; virtio-gpu and virtio-input
+    // share the same virtio,mmio transports as block. Probe DEVICE_ID in driver.
+    const virtio_n = found.virtio_blk_count;
+    if (virtio_n > 0) {
+        @memcpy(found.virtio_gpu_matches[0..virtio_n], found.virtio_blk_matches[0..virtio_n]);
+        found.virtio_gpu_count = virtio_n;
+        @memcpy(found.virtio_input_matches[0..virtio_n], found.virtio_blk_matches[0..virtio_n]);
+        found.virtio_input_count = virtio_n;
+        uart.print("devicetree: virtio-gpu / virtio-input candidates found\n");
     }
 
     if (findEcam(&reader)) |ecam| {

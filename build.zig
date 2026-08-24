@@ -68,18 +68,36 @@ fn addKernel(
     const qemu_cmd = b.addSystemCommand(&.{
         "qemu-system-aarch64",
         "-M",
-        "virt",
+        // Pin GICv2: our intc driver (conduit gicv2) speaks the GICv2 MMIO
+        // CPU-interface. QEMU can otherwise default to GICv3 (whose CPU
+        // interface is system-register based) depending on accelerator/CPU,
+        // which our MMIO driver can't drive - leaving all interrupts
+        // (including the timer) undelivered under HVF.
+        // HVF only supports GICv3; TCG supports either. GICv3 works under
+        // both, so pin it: the kernel's intc layer auto-selects the v2 or
+        // v3 driver from devicetree, and only GICv3 delivers interrupts
+        // (incl. the periodic timer) under Apple's hypervisor.
+        "virt,gic-version=3",
         // "max" rather than "cortex-a72": real cortex-a72 has no PAC
         // (FEAT_PAuth), and the kernel's PAC groundwork (arch/aarch64/pac.zig)
         // needs a CPU model that implements it to actually exercise.
         "-cpu",
-        "max",
+        // "max",
+        "host",
+        "-accel",
+        "hvf",
         "-smp",
         "4",
         "-serial",
         "stdio",
+        "-monitor",
+        "unix:/tmp/opendarwin-qemu-mon.sock,server,nowait",
         "-device",
         "virtio-gpu-device",
+        "-device",
+        "virtio-tablet-device",
+        "-device",
+        "virtio-keyboard-device",
         "-kernel",
     });
     qemu_cmd.addFileArg(kernel_bin.getOutput());
@@ -520,9 +538,9 @@ fn addSkyLightTests(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     step.dependOn(&b.addRunArtifact(t).step);
 }
 
-const smoke_rootfs_basename = "zig-smoke-rootfs.img";
+const rootfs_basename = "rootfs.img";
 
-fn addZigSmokeRootfs(
+fn addRootfs(
     b: *std.Build,
     main_name: []const u8,
     programs: []const BuiltUserland,
@@ -533,8 +551,9 @@ fn addZigSmokeRootfs(
     // Wire real artifact LazyPaths into make_fat32 so -Dmain= changes the
     // Run step's input hash (hardcoded zig-out/... strings do not).
     const make_img = b.addSystemCommand(&.{ "python3", b.pathFromRoot("tools/make_fat32.py") });
-    const image = make_img.addOutputFileArg(smoke_rootfs_basename);
+    const image = make_img.addOutputFileArg(rootfs_basename);
     make_img.addArg("--multi");
+    make_img.addArg(b.fmt("--main-name={s}", .{main_name}));
     make_img.addPrefixedFileArg("usr/lib/libSystem.B.dylib=", libsystem.getEmittedBin());
     make_img.addPrefixedFileArg(
         "System/Library/Frameworks/IOKit.framework/IOKit=",
@@ -559,9 +578,9 @@ fn addZigSmokeRootfs(
     // Kernel autoruns this fixed guest name (see kmain.zig).
     make_img.addPrefixedFileArg("MAIN=", chosen.getEmittedBin());
 
-    const install_img = b.addInstallFile(image, smoke_rootfs_basename);
+    const install_img = b.addInstallFile(image, rootfs_basename);
     const step = b.step(
-        "zig-smoke-rootfs",
+        "rootfs",
         b.fmt("Build a FAT32 QEMU rootfs with every userland program (MAIN = {s})", .{main_name}),
     );
     step.dependOn(&install_img.step);
@@ -591,15 +610,13 @@ pub fn build(b: *std.Build) void {
         programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit) };
     }
     addSkyLightTests(b, optimize);
-    const rootfs_step = addZigSmokeRootfs(b, main_name, programs[0..], libsystem, iokit, skylight);
+    const rootfs_step = addRootfs(b, main_name, programs[0..], libsystem, iokit, skylight);
 
-    const smoke_img_path = b.fmt("{s}/{s}", .{ b.install_path, smoke_rootfs_basename });
-    // -Dmain without -Drootfs => rebuild smoke image and attach it to qemu.
-    // -Drootfs=zig-out/zig-smoke-rootfs.img also waits on that rebuild.
+    const smoke_img_path = b.fmt("{s}/{s}", .{ b.install_path, rootfs_basename });
     const qemu_rootfs: ?[]const u8 = rootfs_opt orelse if (main_opt != null) smoke_img_path else null;
     const qemu_rootfs_dep: ?*std.Build.Step = blk: {
         const path = qemu_rootfs orelse break :blk null;
-        if (std.mem.endsWith(u8, path, smoke_rootfs_basename) or main_opt != null)
+        if (std.mem.endsWith(u8, path, rootfs_basename) or main_opt != null)
             break :blk rootfs_step;
         break :blk null;
     };

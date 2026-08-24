@@ -3,6 +3,7 @@
 const types = @import("types.zig");
 const service = @import("service.zig");
 const framebuffer = @import("framebuffer.zig");
+const iohid_system = @import("drivers/iohid_system.zig");
 const virtio_gpu = @import("../drivers/virtio_gpu.zig");
 const IpcPort = @import("../ipc/port.zig").IpcPort;
 const slab = @import("../mm/slab.zig");
@@ -27,6 +28,8 @@ pub const IOUserClient = struct {
     port: ?*IpcPort = null,
     /// True when this UC is an IOFramebuffer connection.
     is_framebuffer: bool = false,
+    /// True when this UC is an IOHIDSystem connection.
+    is_hid: bool = false,
 };
 
 var master_port_obj: PortObject = .{ .tag = .master };
@@ -57,6 +60,7 @@ pub fn open(svc: *service.IOService) ?*IOUserClient {
     uc.* = .{
         .service = svc,
         .is_framebuffer = isFramebufferService(svc),
+        .is_hid = isHidService(svc),
     };
     const po = slab.allocObj(PortObject);
     po.* = .{ .tag = .connect, .service = svc, .connect = uc, .next = connect_port_head };
@@ -82,6 +86,13 @@ fn isFramebufferService(svc: *service.IOService) bool {
     return false;
 }
 
+fn isHidService(svc: *service.IOService) bool {
+    const name = svc.getClassName();
+    if (classEql(name, iohid_system.CLASS_NAME)) return true;
+    if (classEql(name, "iohid-system")) return true;
+    return false;
+}
+
 fn classEql(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
@@ -98,7 +109,12 @@ pub fn asPortObject(ptr: ?*anyopaque) ?*PortObject {
 pub const kIOFBSelectGetInfo: u32 = 0;
 pub const kIOFBSelectPresent: u32 = 1;
 
+/// IOConnectCallMethod selectors for IOHIDSystem connections.
+pub const kIOHIDSelectGetPointState: u32 = 0;
+pub const kIOHIDSelectPollEvents: u32 = 1;
+
 pub const FbInfo = virtio_gpu.FbInfo;
+pub const IOHIDPointState = iohid_system.IOHIDPointState;
 
 pub fn framebufferGetInfo(uc: *IOUserClient, out: *FbInfo) types.IOReturn {
     if (!uc.is_framebuffer) return types.kIOReturnUnsupported;
@@ -120,24 +136,44 @@ pub fn framebufferMapAperture(uc: *IOUserClient) ?struct { pa: u64, len: u64 } {
 }
 
 /// Darwin `iokit_user_client_trap` / IOConnectTrap index dispatch.
-/// Index 0: getInfo — p1 = user pointer to FbInfo
-/// Index 1: present
+/// Framebuffer:
+///   Index 0: getInfo — p1 = user pointer to FbInfo
+///   Index 1: present
+/// HID:
+///   Index 0: getPointState — p1 = user pointer to IOHIDPointState
+///   Index 1: pollEvents
 pub fn trap(uc: *IOUserClient, index: u32, p1: u64, p2: u64, p3: u64, p4: u64, p5: u64, p6: u64) types.IOReturn {
     _ = p2;
     _ = p3;
     _ = p4;
     _ = p5;
     _ = p6;
-    switch (index) {
-        kIOFBSelectGetInfo => {
-            if (p1 == 0) return types.kIOReturnBadArgument;
-            var info: FbInfo = .{};
-            const rc = framebufferGetInfo(uc, &info);
-            if (rc != types.kIOReturnSuccess) return rc;
-            if (!@import("../syscall/usercopy.zig").copyOut(FbInfo, p1, info)) return types.kIOReturnBadArgument;
-            return types.kIOReturnSuccess;
-        },
-        kIOFBSelectPresent => return framebufferPresent(uc),
-        else => return types.kIOReturnUnsupported,
+    if (uc.is_framebuffer) {
+        switch (index) {
+            kIOFBSelectGetInfo => {
+                if (p1 == 0) return types.kIOReturnBadArgument;
+                var info: FbInfo = .{};
+                const rc = framebufferGetInfo(uc, &info);
+                if (rc != types.kIOReturnSuccess) return rc;
+                if (!@import("../syscall/usercopy.zig").copyOut(FbInfo, p1, info)) return types.kIOReturnBadArgument;
+                return types.kIOReturnSuccess;
+            },
+            kIOFBSelectPresent => return framebufferPresent(uc),
+            else => return types.kIOReturnUnsupported,
+        }
+    } else if (uc.is_hid) {
+        switch (index) {
+            kIOHIDSelectGetPointState => {
+                if (p1 == 0) return types.kIOReturnBadArgument;
+                var state: IOHIDPointState = .{};
+                const rc = iohid_system.getPointState(&state);
+                if (rc != types.kIOReturnSuccess) return rc;
+                if (!@import("../syscall/usercopy.zig").copyOut(IOHIDPointState, p1, state)) return types.kIOReturnBadArgument;
+                return types.kIOReturnSuccess;
+            },
+            kIOHIDSelectPollEvents => return iohid_system.pollEvents(),
+            else => return types.kIOReturnUnsupported,
+        }
     }
+    return types.kIOReturnUnsupported;
 }
