@@ -41,22 +41,6 @@ SECTIONS
 
     __kernel_end = .;
     __image_size = __kernel_end - KERNEL_LOAD_ADDR;
-
-    /* Reserve a fixed 6MB for kernel-only content regardless of its actual
-     * size, so mm/mmu.zig's KERNEL_IMAGE_MAX_LEN can be a safe compile-time
-     * constant that's guaranteed to stop before .userpages below - if the
-     * kernel ever actually grows past 6MB, this line makes the linker fail
-     * loudly (location counter moving backward) instead of silently
-     * reintroducing the page_pool/kernel_regions overlap bug. */
-    . = 0x40680000; /* KERNEL_LOAD_ADDR + 0x600000 */
-
-    /* Dedicated symbol for the reservation boundary, independent of
-     * .userpages' own address below: when nothing currently contributes to
-     * .userpages (no userland content built into this image yet), wild
-     * collapses that *empty* output section's address to 0 rather than
-     * this location-counter value, which silently zeroed out kmain.rs's
-     * free-memory computation (PMM tried to claim from physical address 0
-     * instead of past the 6MB reservation, faulting on unmapped low RAM). */
     __kernel_reserved_end = .;
 
     /* Deliberately separate from .bss and placed after __kernel_end: pages

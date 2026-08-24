@@ -1,19 +1,8 @@
-# Freestanding aarch64-unknown-none kernel: no_std/no_main. Configured under
-# `root//platforms:kernel-aarch64` (platforms/BUCK), which drives
-# toolchains//:rust's select() onto the freestanding triple + `-Cpanic=abort`
-# (see toolchains/BUCK) for this target *and* everything it transitively
-# depends on, including third-party crates from buck/deps/rust/BUCK.
-#
-# Cargo's `[[bin]] name = "kernel"` implicitly links against the crate's own
-# `lib.rs` (all entry asm / kmain / panic handler / allocator live there, per
-# src/main.rs's `use kernel as _;`); buck2 has no such implicit same-package
-# lib+bin linkage, so that's modeled explicitly as `kernel` depending on
-# `:kernel-lib`.
 rust_library(
     name = "kernel-lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["src/ramdisk.fat32.lz4"],
+    srcs = glob(["**/*.rs"], exclude = ["main.rs"]) + ["ramdisk.fat32.zst"],
     crate = "kernel",
-    crate_root = "src/lib.rs",
+    crate_root = "lib.rs",
     default_target_platform = "root//platforms:kernel-aarch64",
     edition = "2024",
     deps = [
@@ -26,6 +15,7 @@ rust_library(
         "deps//rust:safe-mmio",
         "deps//rust:spin",
         "deps//rust:virtio-drivers",
+        "deps//rust:zrip",
     ],
     visibility = ["PUBLIC"],
 )
@@ -44,8 +34,8 @@ export_file(
 
 rust_binary(
     name = "kernel",
-    srcs = ["src/main.rs"],
-    crate_root = "src/main.rs",
+    srcs = ["main.rs"],
+    crate_root = "main.rs",
     default_target_platform = "root//platforms:kernel-aarch64",
     edition = "2024",
     linker_flags = [
@@ -61,8 +51,8 @@ rust_binary(
 
 rust_binary(
     name = "kernel-meson",
-    srcs = ["src/main.rs"],
-    crate_root = "src/main.rs",
+    srcs = ["main.rs"],
+    crate_root = "main.rs",
     default_target_platform = "root//platforms:kernel-aarch64",
     edition = "2024",
     linker_flags = [

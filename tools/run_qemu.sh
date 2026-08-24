@@ -26,8 +26,8 @@
 set -euo pipefail
 
 # Must match devicetree.rs's discover() fallback: mmu::KERNEL_LOAD_ADDR
-# (0x40080000) + mmu::KERNEL_IMAGE_MAX_LEN (0x600000).
-dtb_addr=0x40680000
+# (0x40080000) + mmu::KERNEL_IMAGE_MAX_LEN (0x08000000).
+dtb_addr=0x48080000
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"

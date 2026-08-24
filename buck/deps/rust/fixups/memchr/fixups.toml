@@ -4,4 +4,4 @@
 # omit_features globally (which broke aho-corasick's use of memchr's
 # std-gated `Finder::into_owned` for host builds).
 ["cfg(target_os = \"none\")"]
-omit_features = ["std"]
+omit_features = ["std", "default"]

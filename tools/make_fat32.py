@@ -129,14 +129,18 @@ def build(out_path, files, total_sectors=64 * 1024):
     for path, data in files:
         add_path(root, path, data)
 
-    fat_size = 512
-    first_data_sector = RESERVED_SECTORS + NUM_FATS * fat_size
     next_cluster = 2
     for node in walk_all(root):
         node.cluster = next_cluster
         payload_len = len(dir_bytes(node)) if node.is_dir else len(node.data)
         node.clusters = max(1, math.ceil(payload_len / SECTOR))
         next_cluster += node.clusters
+
+    fat_size = max(512, math.ceil((next_cluster * 4) / SECTOR))
+    first_data_sector = RESERVED_SECTORS + NUM_FATS * fat_size
+    min_sectors = first_data_sector + next_cluster * SECTORS_PER_CLUSTER + 1024
+    if total_sectors is None or total_sectors < min_sectors:
+        total_sectors = min_sectors
 
     img = bytearray(total_sectors * SECTOR)
     bs = bytearray(SECTOR)
