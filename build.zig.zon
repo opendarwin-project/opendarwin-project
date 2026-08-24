@@ -5,11 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .maximum_zig_version = "0.16.0",
     .dependencies = .{
-        .conduit = .{
-            .path = "./deps/conduit",
-        },
         .prism = .{
-            .path = "./deps/prism",
+            .path = "../prism",
         },
         .dtree = .{
             .url = "git+https://github.com/Midstall/dtree#974e557da3c6426eaf2b3284c26ff8740163d954",
@@ -22,6 +19,10 @@
         .corefoundation = .{
             .url = "git+https://github.com/swiftlang/swift-corelibs-foundation?ref=swift-5.1.5-RELEASE#4cd3bf083b4705d25ac76ef8d038a06bc586265a",
             .hash = "N-V-__8AAKRqHQGd4eGkiP8lLgKhZzZG7V-mYcKKeQIFDndu",
+        },
+        .conduit = .{
+            .url = "git+https://github.com/Midstall/conduit#1d1a9d4f2ecda4fd91f571a63e816727c1a85fad",
+            .hash = "conduit-0.1.0-R_mFrKEiBQCsP4aH4NpICkETF0qb408ouijHM_x5VH8c",
         },
     },
     .paths = .{

@@ -1,4 +1,8 @@
-//! IOKit-style status codes and shared constants (Zig core).
+//! IOKit-style status codes (Zig core).
+//!
+//! Collection sizes are unbounded: children, properties, published services,
+//! and catalogue personalities are slab-allocated lists, matching XNU's
+//! OSOrderedSet / OSDictionary / IOCatalogue.
 
 pub const IOReturn = i32;
 
@@ -10,13 +14,6 @@ pub const kIOReturnUnsupported: IOReturn = -4;
 pub const kIOReturnNotReady: IOReturn = -5;
 pub const kIOReturnNoDevice: IOReturn = -6;
 pub const kIOReturnAborted: IOReturn = -7;
-
-pub const MAX_NAME_LEN: usize = 64;
-pub const MAX_CHILDREN: usize = 8;
-pub const MAX_PROPERTIES: usize = 16;
-pub const MAX_PROPERTY_KEY_LEN: usize = 32;
-pub const MAX_SERVICES: usize = 32;
-pub const MAX_DRIVERS: usize = 8;
 
 /// Property value stored in the registry bag (numeric or short string).
 pub const PropertyValue = union(enum) {

@@ -87,8 +87,8 @@ pub fn findMatchingService(class_name: []const u8) ?*service.IOService {
     while (i < registry.publishedCount()) : (i += 1) {
         const parent = registry.publishedAt(i) orelse continue;
         var ci: usize = 0;
-        while (ci < parent.entry.child_count) : (ci += 1) {
-            const child_entry = parent.entry.children[ci] orelse continue;
+        while (ci < parent.entry.childCount()) : (ci += 1) {
+            const child_entry = parent.entry.childAt(ci) orelse continue;
             const child = service.IOService.fromEntry(child_entry);
             if (matchesClass(child, class_name)) return child;
         }

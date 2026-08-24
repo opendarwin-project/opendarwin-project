@@ -1,8 +1,10 @@
 //! IORegistry singleton — root tree, driver candidates, match/start.
+//! Published services and catalogue personalities are unbounded lists.
 
 const types = @import("types.zig");
 const service = @import("service.zig");
 const uart = @import("../drivers/uart.zig");
+const slab = @import("../mm/slab.zig");
 
 pub const DriverCandidate = struct {
     /// Driver IOClass name (e.g. "VirtioGpuFramebuffer").
@@ -15,22 +17,36 @@ pub const DriverCandidate = struct {
     attach_and_start: *const fn (*service.IOService) types.IOReturn,
 };
 
+const PublishedNode = struct {
+    next: ?*PublishedNode = null,
+    svc: *service.IOService,
+};
+
+const DriverNode = struct {
+    next: ?*DriverNode = null,
+    candidate: DriverCandidate,
+};
+
 var root_service: service.IOService = .{};
 var initialized: bool = false;
 
-var published: [types.MAX_SERVICES]*service.IOService = undefined;
+var published_head: ?*PublishedNode = null;
+var published_tail: ?*PublishedNode = null;
 var published_count: usize = 0;
 
-var drivers: [types.MAX_DRIVERS]DriverCandidate = undefined;
-var driver_count: usize = 0;
+var driver_head: ?*DriverNode = null;
+var driver_tail: ?*DriverNode = null;
 
 pub fn init() void {
     if (initialized) return;
     root_service.init("IORegistryRoot", "Root", "");
     root_service.state.registered = true;
     root_service.state.started = true;
+    published_head = null;
+    published_tail = null;
     published_count = 0;
-    driver_count = 0;
+    driver_head = null;
+    driver_tail = null;
     initialized = true;
 }
 
@@ -39,17 +55,30 @@ pub fn root() *service.IOService {
 }
 
 pub fn registerDriver(candidate: DriverCandidate) bool {
-    if (driver_count >= types.MAX_DRIVERS) return false;
-    drivers[driver_count] = candidate;
-    driver_count += 1;
+    const node = slab.allocObj(DriverNode);
+    node.* = .{ .candidate = candidate };
+    if (driver_tail) |tail| {
+        tail.next = node;
+        driver_tail = node;
+    } else {
+        driver_head = node;
+        driver_tail = node;
+    }
     return true;
 }
 
 pub fn publish(svc: *service.IOService) bool {
     if (!initialized) return false;
-    if (published_count >= types.MAX_SERVICES) return false;
     if (!root_service.entry.attachChild(svc.asEntry())) return false;
-    published[published_count] = svc;
+    const node = slab.allocObj(PublishedNode);
+    node.* = .{ .svc = svc };
+    if (published_tail) |tail| {
+        tail.next = node;
+        published_tail = node;
+    } else {
+        published_head = node;
+        published_tail = node;
+    }
     published_count += 1;
     svc.state.registered = true;
 
@@ -57,7 +86,7 @@ pub fn publish(svc: *service.IOService) bool {
     uart.print(svc.getClassName());
     uart.print(" ");
     uart.print(svc.entry.getName());
-    if (svc.entry.location_len > 0) {
+    if (svc.entry.getLocation().len > 0) {
         uart.print("@");
         uart.print(svc.entry.getLocation());
     }
@@ -70,8 +99,13 @@ pub fn publishedCount() usize {
 }
 
 pub fn publishedAt(index: usize) ?*service.IOService {
-    if (index >= published_count) return null;
-    return published[index];
+    var i: usize = 0;
+    var node = published_head;
+    while (node) |n| : (node = n.next) {
+        if (i == index) return n.svc;
+        i += 1;
+    }
+    return null;
 }
 
 fn classEql(a: []const u8, b: []const u8) bool {
@@ -84,10 +118,12 @@ fn classEql(a: []const u8, b: []const u8) bool {
 
 pub fn matchAndStartDrivers() usize {
     var started: usize = 0;
-    for (0..published_count) |pi| {
-        const provider = published[pi];
-        for (0..driver_count) |di| {
-            const drv = drivers[di];
+    var pnode = published_head;
+    while (pnode) |pn| : (pnode = pn.next) {
+        const provider = pn.svc;
+        var dnode = driver_head;
+        while (dnode) |dn| : (dnode = dn.next) {
+            const drv = dn.candidate;
             if (!classEql(provider.getClassName(), drv.provider_class)) continue;
             if (!drv.match(provider)) continue;
             const rc = drv.attach_and_start(provider);

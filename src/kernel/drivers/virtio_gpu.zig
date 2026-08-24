@@ -7,6 +7,13 @@ const conduit = @import("conduit");
 const provider = @import("../device/provider.zig");
 const mmu = @import("../mm/mmu.zig");
 const pmm = @import("../mm/pmm.zig");
+const uart = @import("uart.zig");
+
+const VIRTIO_MAGIC: u32 = 0x74726976; // 'virt'
+const VIRTIO_REG_MAGIC: usize = 0x000;
+const VIRTIO_REG_VERSION: usize = 0x004;
+const VIRTIO_REG_DEVICE_ID: usize = 0x008;
+const VIRTIO_DEVICE_ID_GPU: u32 = 16;
 
 const PAGE_SIZE = mmu.PAGE_SIZE;
 
@@ -39,11 +46,27 @@ pub const FbInfo = extern struct {
 
 pub const FB_FORMAT_BGRA8: u32 = 0;
 
-/// Record discovery results for later IOKit publish + bind. Does not
-/// touch the device.
+/// True if `base` is a virtio-mmio transport with virtio-gpu's device id.
+/// Does not run the feature handshake (empty slots have magic but id 0).
+pub fn probe(base: u64) bool {
+    if (base == 0) return false;
+    const mmio = conduit.Mmio.direct(base);
+    if (mmio.read(u32, VIRTIO_REG_MAGIC) != VIRTIO_MAGIC) return false;
+    return mmio.read(u32, VIRTIO_REG_DEVICE_ID) == VIRTIO_DEVICE_ID_GPU;
+}
+
+/// Record discovery results for later IOKit publish + bind. Keeps only
+/// slots that probe as virtio-gpu so empty virtio-mmio transports are not
+/// published as display nubs.
 pub fn stashCandidates(matches: []const provider.Info, ecam_base: ?u64) void {
-    const n = @min(matches.len, candidate_buf.len);
-    @memcpy(candidate_buf[0..n], matches[0..n]);
+    var n: usize = 0;
+    for (matches) |m| {
+        if (n >= candidate_buf.len) break;
+        if (m.pci_vendor_id != 0) continue;
+        if (!probe(m.mmio_base)) continue;
+        candidate_buf[n] = m;
+        n += 1;
+    }
     candidate_count = n;
     stored_ecam = ecam_base;
 }
@@ -56,21 +79,10 @@ pub fn stashedEcam() ?u64 {
     return stored_ecam;
 }
 
-/// Try each candidate match until one probes as a real virtio-gpu device.
-/// `ecam_base` is required for PCI candidates (from the DTB host bridge).
-/// Returns true and leaves `device` and `matched` populated on success.
-pub fn init(candidate_matches: []const provider.Info, ecam_base: ?u64) bool {
-    // Prefer PCI candidates: QEMU attaches virtio-gpu-pci, while MMIO slots are
-    // usually empty placeholders that fail the magic/device-id probe.
-    for (candidate_matches) |m| {
-        if (m.pci_vendor_id == 0) continue;
-        if (ecam_base) |ecam| {
-            if (tryPci(m, ecam)) {
-                matched = m;
-                return true;
-            }
-        }
-    }
+/// Try each virtio-mmio candidate until one probes as a real virtio-gpu.
+/// PCI candidates are ignored. Returns true and leaves `device` and
+/// `matched` populated on success.
+pub fn init(candidate_matches: []const provider.Info) bool {
     for (candidate_matches) |m| {
         if (m.pci_vendor_id != 0) continue;
         if (m.mmio_base == 0) continue;
@@ -79,40 +91,15 @@ pub fn init(candidate_matches: []const provider.Info, ecam_base: ?u64) bool {
             matched = m;
             return true;
         }
+        const mmio = conduit.Mmio.direct(m.mmio_base);
+        uart.print("opendarwin: virtio-gpu at ");
+        uart.printHex(m.mmio_base);
+        uart.print(" start failed (version=");
+        uart.printHex(mmio.read(u32, VIRTIO_REG_VERSION));
+        uart.print(")\n");
     }
     device = null;
     matched = null;
-    return false;
-}
-
-fn tryPci(m: provider.Info, ecam_base: u64) bool {
-    // Prefer modern virtio-gpu; also accept any Red Hat virtio display class.
-    const looks_gpu = (m.pci_vendor_id == 0x1AF4 and m.pci_device_id == 0x1050) or
-        m.pci_class_code == 0x03;
-    if (!looks_gpu) return false;
-
-    // Assign BARs (direct -kernel boot leaves them at 0) and map each window.
-    const bars = conduit.driver.virtio_pci.assignBars(
-        ecam_base,
-        m.pci_bus,
-        m.pci_device,
-        m.pci_function,
-    );
-    for (bars) |bar| {
-        if (bar.is_high_half or bar.is_io or bar.base == 0 or bar.size == 0) continue;
-        mmu.mapExtra(bar.base, bar.size, .{ .writable = true, .executable = false, .user = false, .device = true });
-    }
-
-    const transport = conduit.driver.virtio_pci.bind(
-        ecam_base,
-        m.pci_bus,
-        m.pci_device,
-        m.pci_function,
-    ) orelse return false;
-
-    device = conduit.driver.virtio_gpu.bindPci(transport);
-    if (device.?.start()) return true;
-    device = null;
     return false;
 }
 

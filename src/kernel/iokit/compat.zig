@@ -32,16 +32,18 @@ export fn IOKit_RegistryRoot() callconv(.c) ?*service.IOService {
 
 export fn IOKit_ServiceGetName(svc: ?*service.IOService, out_len: ?*usize) callconv(.c) ?[*]const u8 {
     const s = svc orelse return null;
-    if (out_len) |p| p.* = s.entry.name_len;
-    if (s.entry.name_len == 0) return null;
-    return s.entry.name[0..].ptr;
+    const name = s.entry.getName();
+    if (out_len) |p| p.* = name.len;
+    if (name.len == 0) return null;
+    return name.ptr;
 }
 
 export fn IOKit_ServiceGetClassName(svc: ?*service.IOService, out_len: ?*usize) callconv(.c) ?[*]const u8 {
     const s = svc orelse return null;
-    if (out_len) |p| p.* = s.class_name_len;
-    if (s.class_name_len == 0) return null;
-    return s.class_name[0..].ptr;
+    const class_name = s.getClassName();
+    if (out_len) |p| p.* = class_name.len;
+    if (class_name.len == 0) return null;
+    return class_name.ptr;
 }
 
 export fn IOKit_ServiceGetProvider(svc: ?*service.IOService) callconv(.c) ?*service.IOService {

@@ -1,4 +1,5 @@
-//! VirtioGpuFramebuffer — IOFramebuffer that binds conduit virtio-gpu.
+//! VirtioGpuFramebuffer — IOFramebuffer that binds conduit virtio-gpu
+//! over virtio-mmio (IODisplayNub). PCI virtio-gpu is not used here.
 
 const types = @import("../types.zig");
 const service = @import("../service.zig");
@@ -10,13 +11,14 @@ const provider_info = @import("../../device/provider.zig");
 const uart = @import("../../drivers/uart.zig");
 
 pub const CLASS_NAME = "VirtioGpuFramebuffer";
+const PROVIDER_CLASS = "IODisplayNub";
 
 var instance: VirtioGpuFramebuffer = .{};
 var attached: bool = false;
 
 pub const VirtioGpuFramebuffer = struct {
     fb: framebuffer.IOFramebuffer = undefined,
-    pci: ?*pci_device.IOPCIDevice = null,
+    nub: ?*pci_device.IOPCIDevice = null,
 
     pub fn asService(self: *VirtioGpuFramebuffer) *service.IOService {
         return self.fb.asService();
@@ -24,15 +26,9 @@ pub const VirtioGpuFramebuffer = struct {
 };
 
 fn matchProvider(provider: *service.IOService) bool {
-    if (classEql(provider.getClassName(), pci_device.CLASS_NAME)) {
-        const pci = pci_device.IOPCIDevice.fromService(provider);
-        return pci.looksLikeVirtioGpu();
-    }
-    if (classEql(provider.getClassName(), "IODisplayNub")) {
-        const pci = pci_device.IOPCIDevice.fromService(provider);
-        return pci.mmio_base != 0;
-    }
-    return false;
+    if (!classEql(provider.getClassName(), PROVIDER_CLASS)) return false;
+    const nub = pci_device.IOPCIDevice.fromService(provider);
+    return nub.mmio_base != 0;
 }
 
 fn attachAndStart(provider: *service.IOService) types.IOReturn {
@@ -42,17 +38,18 @@ fn attachAndStart(provider: *service.IOService) types.IOReturn {
     instance.fb.init(&vtable, "virtio-gpu-fb");
     instance.fb.service.setClassName(CLASS_NAME);
     _ = instance.fb.service.entry.setPropertyStr("IOClass", CLASS_NAME);
-    _ = instance.fb.service.entry.setPropertyStr("IOProviderClass", provider.getClassName());
+    _ = instance.fb.service.entry.setPropertyStr("IOProviderClass", PROVIDER_CLASS);
 
     if (!instance.fb.asService().attachToProvider(provider)) {
         return types.kIOReturnNoMemory;
     }
-    instance.pci = pci_device.IOPCIDevice.fromService(provider);
+    instance.nub = pci_device.IOPCIDevice.fromService(provider);
     attached = true;
 
     const rc = instance.fb.asService().start(provider);
     if (rc != types.kIOReturnSuccess) {
         attached = false;
+        instance.nub = null;
         return rc;
     }
     // Publish so IOServiceGetMatchingService("IOFramebuffer") can find us.
@@ -68,27 +65,23 @@ fn probe(svc: *service.IOService, provider: *service.IOService) types.IOReturn {
 
 fn start(svc: *service.IOService, provider: *service.IOService) types.IOReturn {
     _ = svc;
-    const pci = pci_device.IOPCIDevice.fromService(provider);
+    const nub = pci_device.IOPCIDevice.fromService(provider);
+    if (nub.mmio_base == 0) return types.kIOReturnNoDevice;
 
-    const info = provider_info.Info{
-        .class = .display,
-        .name = provider.entry.getName(),
-        .mmio_base = pci.mmio_base,
-        .mmio_len = pci.mmio_len,
-        .irq = pci.irq,
-        .pci_bus = pci.bus,
-        .pci_device = pci.device,
-        .pci_function = pci.function,
-        .pci_vendor_id = pci.vendor_id,
-        .pci_device_id = pci.device_id,
-        .pci_class_code = pci.class_code,
-        .pci_subclass = pci.subclass,
-        .pci_prog_if = pci.prog_if,
-    };
-
-    const ecam: ?u64 = if (pci.ecam_base != 0) pci.ecam_base else null;
-    if (!virtio_gpu.init(&.{info}, ecam)) {
-        uart.print("opendarwin: VirtioGpuFramebuffer: bind failed\n");
+    // Probe every stashed virtio-mmio GPU slot, not only this nub. QEMU virt
+    // lists 32 transports; the real device may not be the first published one.
+    const stashed = virtio_gpu.stashedCandidates();
+    const ok = if (stashed.len > 0)
+        virtio_gpu.init(stashed)
+    else
+        virtio_gpu.init(&.{provider_info.Info{
+            .class = .pci,
+            .name = provider.entry.getName(),
+            .mmio_base = nub.mmio_base,
+            .mmio_len = nub.mmio_len,
+            .irq = nub.irq,
+        }});
+    if (!ok) {
         return types.kIOReturnNoDevice;
     }
 
@@ -111,7 +104,7 @@ fn start(svc: *service.IOService, provider: *service.IOService) types.IOReturn {
         .pixel_type = 0,
     };
 
-    uart.print("opendarwin: virtio-gpu device ready (IOKit)\n");
+    uart.print("opendarwin: virtio-gpu device ready (IOKit, virtio-mmio)\n");
     return types.kIOReturnSuccess;
 }
 
@@ -166,13 +159,7 @@ const vtable = framebuffer.IOFramebufferVtable{
 pub fn register() void {
     _ = registry.registerDriver(.{
         .class_name = CLASS_NAME,
-        .provider_class = pci_device.CLASS_NAME,
-        .match = matchProvider,
-        .attach_and_start = attachAndStart,
-    });
-    _ = registry.registerDriver(.{
-        .class_name = CLASS_NAME,
-        .provider_class = "IODisplayNub",
+        .provider_class = PROVIDER_CLASS,
         .match = matchProvider,
         .attach_and_start = attachAndStart,
     });

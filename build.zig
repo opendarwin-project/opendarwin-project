@@ -79,10 +79,16 @@ fn addKernel(
         "-serial",
         "stdio",
         "-device",
-        "virtio-gpu-pci",
+        "virtio-gpu-device",
         "-kernel",
     });
     qemu_cmd.addFileArg(kernel_bin.getOutput());
+    // conduit's virtio-mmio drivers speak the modern (v2) protocol; QEMU
+    // virt's transports default to legacy (v1) otherwise.
+    qemu_cmd.addArgs(&.{
+        "-global",
+        "virtio-mmio.force-legacy=false",
+    });
 
     // -Drootfs=<path> attaches a raw disk image as a virtio-mmio block
     // device (see drivers/virtio_blk.zig / devicetree.zig for the kernel
@@ -95,11 +101,6 @@ fn addKernel(
             b.fmt("file={s},if=none,format=raw,id=rootfs", .{path}),
             "-device",
             "virtio-blk-device,drive=rootfs",
-            // conduit's virtio_blk driver only speaks the modern (v2)
-            // virtio-mmio protocol; QEMU virt's transports default to
-            // legacy (v1) otherwise.
-            "-global",
-            "virtio-mmio.force-legacy=false",
         });
     }
 

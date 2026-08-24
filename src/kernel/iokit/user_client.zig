@@ -5,6 +5,7 @@ const service = @import("service.zig");
 const framebuffer = @import("framebuffer.zig");
 const virtio_gpu = @import("../drivers/virtio_gpu.zig");
 const IpcPort = @import("../ipc/port.zig").IpcPort;
+const slab = @import("../mm/slab.zig");
 
 pub const KObjectTag = enum(u32) {
     none = 0,
@@ -18,6 +19,7 @@ pub const PortObject = struct {
     tag: KObjectTag,
     service: ?*service.IOService = null,
     connect: ?*IOUserClient = null,
+    next: ?*PortObject = null,
 };
 
 pub const IOUserClient = struct {
@@ -27,54 +29,44 @@ pub const IOUserClient = struct {
     is_framebuffer: bool = false,
 };
 
-const MAX_CONNECTS: usize = 8;
-var connect_pool: [MAX_CONNECTS]IOUserClient = undefined;
-var connect_port_objs: [MAX_CONNECTS]PortObject = undefined;
-var connect_count: usize = 0;
-
 var master_port_obj: PortObject = .{ .tag = .master };
-var service_port_objs: [types.MAX_SERVICES]PortObject = undefined;
+var service_port_head: ?*PortObject = null;
+var connect_port_head: ?*PortObject = null;
 
 pub fn masterPortObject() *PortObject {
     return &master_port_obj;
 }
 
 pub fn bindServicePort(svc: *service.IOService, port: *IpcPort) *PortObject {
-    // Reuse slot by service pointer when possible.
-    for (&service_port_objs) |*obj| {
+    var node = service_port_head;
+    while (node) |obj| : (node = obj.next) {
         if (obj.tag == .service and obj.service == svc) {
             port.ip_kobject = obj;
             return obj;
         }
     }
-    for (&service_port_objs) |*obj| {
-        if (obj.tag == .none) {
-            obj.* = .{ .tag = .service, .service = svc };
-            port.ip_kobject = obj;
-            return obj;
-        }
-    }
-    // Overwrite slot 0 as last resort (smoke has few services).
-    service_port_objs[0] = .{ .tag = .service, .service = svc };
-    port.ip_kobject = &service_port_objs[0];
-    return &service_port_objs[0];
+    const obj = slab.allocObj(PortObject);
+    obj.* = .{ .tag = .service, .service = svc, .next = service_port_head };
+    service_port_head = obj;
+    port.ip_kobject = obj;
+    return obj;
 }
 
 pub fn open(svc: *service.IOService) ?*IOUserClient {
-    if (connect_count >= MAX_CONNECTS) return null;
-    const uc = &connect_pool[connect_count];
-    const po = &connect_port_objs[connect_count];
-    connect_count += 1;
+    const uc = slab.allocObj(IOUserClient);
     uc.* = .{
         .service = svc,
         .is_framebuffer = isFramebufferService(svc),
     };
-    po.* = .{ .tag = .connect, .service = svc, .connect = uc };
+    const po = slab.allocObj(PortObject);
+    po.* = .{ .tag = .connect, .service = svc, .connect = uc, .next = connect_port_head };
+    connect_port_head = po;
     return uc;
 }
 
 pub fn bindConnectPort(uc: *IOUserClient, port: *IpcPort) void {
-    for (&connect_port_objs) |*obj| {
+    var node = connect_port_head;
+    while (node) |obj| : (node = obj.next) {
         if (obj.connect == uc) {
             port.ip_kobject = obj;
             uc.port = port;

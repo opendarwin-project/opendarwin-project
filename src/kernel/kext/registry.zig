@@ -118,7 +118,7 @@ fn startIfMatched(driver_idx: usize, provider_idx: usize) void {
 fn driverClassFromConduit(class: conduit.Class) ?u64 {
     return switch (class) {
         .block => api.DRIVER_CLASS_BLOCK,
-        .display => api.DRIVER_CLASS_DISPLAY,
+        .pci => api.DRIVER_CLASS_DISPLAY,
         else => null,
     };
 }

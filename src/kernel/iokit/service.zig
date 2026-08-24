@@ -2,6 +2,7 @@
 
 const types = @import("types.zig");
 const registry_entry = @import("registry_entry.zig");
+const slab = @import("../mm/slab.zig");
 
 pub const State = packed struct(u32) {
     registered: bool = false,
@@ -40,8 +41,7 @@ pub const IOService = struct {
     vtable: *const IOServiceVtable = &default_vtable,
     provider: ?*IOService = null,
     state: State = .{},
-    class_name: [types.MAX_NAME_LEN]u8 = undefined,
-    class_name_len: usize = 0,
+    class_name: []const u8 = &.{},
 
     pub fn init(self: *IOService, class_name: []const u8, name: []const u8, location: []const u8) void {
         self.* = .{
@@ -53,13 +53,11 @@ pub const IOService = struct {
     }
 
     pub fn setClassName(self: *IOService, class_name: []const u8) void {
-        const n = @min(class_name.len, types.MAX_NAME_LEN);
-        @memcpy(self.class_name[0..n], class_name[0..n]);
-        self.class_name_len = n;
+        self.class_name = dupSlice(class_name);
     }
 
     pub fn getClassName(self: *const IOService) []const u8 {
-        return self.class_name[0..self.class_name_len];
+        return self.class_name;
     }
 
     pub fn asEntry(self: *IOService) *registry_entry.IORegistryEntry {
@@ -98,3 +96,10 @@ pub const IOService = struct {
         return true;
     }
 };
+
+fn dupSlice(s: []const u8) []const u8 {
+    if (s.len == 0) return &.{};
+    const buf: [*]u8 = @ptrCast(slab.alloc(s.len));
+    @memcpy(buf[0..s.len], s);
+    return buf[0..s.len];
+}

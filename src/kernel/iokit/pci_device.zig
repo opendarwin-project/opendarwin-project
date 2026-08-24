@@ -1,6 +1,5 @@
 //! IOPCIDevice — PCI config space + BAR mapping over ECAM.
 
-const conduit = @import("conduit");
 const types = @import("types.zig");
 const service = @import("service.zig");
 const memory = @import("memory.zig");
@@ -90,19 +89,10 @@ pub const IOPCIDevice = struct {
     }
 
     pub fn assignAndMapBars(self: *IOPCIDevice) types.IOReturn {
-        if (self.ecam_base == 0 or self.vendor_id == 0) return types.kIOReturnNoDevice;
-        const bars = conduit.driver.virtio_pci.assignBars(
-            self.ecam_base,
-            self.bus,
-            self.device,
-            self.function,
-        );
-        for (bars, 0..) |bar, i| {
-            if (bar.is_high_half or bar.is_io or bar.base == 0 or bar.size == 0) continue;
-            self.bar_maps[i].initWithPhysicalRange(bar.base, bar.size);
-            const rc = self.bar_maps[i].map();
-            if (rc != types.kIOReturnSuccess) return rc;
-        }
+        if (self.mmio_base == 0 or self.mmio_len == 0) return types.kIOReturnNoDevice;
+        self.bar_maps[0].initWithPhysicalRange(self.mmio_base, self.mmio_len);
+        const rc = self.bar_maps[0].map();
+        if (rc != types.kIOReturnSuccess) return rc;
         self.bars_assigned = true;
         return types.kIOReturnSuccess;
     }

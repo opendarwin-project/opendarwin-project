@@ -396,7 +396,7 @@ export fn kmain() callconv(.c) noreturn {
             found.virtio_gpu_matches[0..found.virtio_gpu_count],
             found.pci_ecam_base,
         );
-        if (found.virtio_gpu_count > 0) {
+        if (virtio_gpu.stashedCandidates().len > 0) {
             uart.print("opendarwin: virtio-gpu candidates stashed for IOKit\n");
         } else {
             uart.print("opendarwin: no virtio-gpu candidates\n");
@@ -458,7 +458,7 @@ export fn kmain() callconv(.c) noreturn {
         uart.print("opendarwin: PAC not available on this CPU\n");
     }
 
-    // Display bind via IOKit (VirtioGpuFramebuffer on IOPCIDevice nubs).
+    // Display bind via IOKit (VirtioGpuFramebuffer on virtio-mmio IODisplayNub).
     // No longer depends on a FAT-loaded DISPLAY kext.
     iokit_compat.linkForce();
     iokit_root.init();
