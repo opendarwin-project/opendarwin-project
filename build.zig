@@ -170,29 +170,6 @@ fn addPrepareSharedCacheTool(b: *std.Build, optimize: std.builtin.OptimizeMode) 
     run_step.dependOn(&b.addInstallArtifact(tool_exe, .{}).step);
 }
 
-fn addDarwinWindowSmoke(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
-    const prism_dep = b.dependency("prism", .{
-        .target = b.graph.host,
-        .optimize = optimize,
-        .drivers = "software",
-    });
-    const tool_mod = b.createModule(.{
-        .root_source_file = b.path("tools/darwin_window_smoke.zig"),
-        .target = b.graph.host,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "prism", .module = prism_dep.module("prism") }},
-    });
-    const tool_exe = b.addExecutable(.{
-        .name = "darwin_window_smoke",
-        .root_module = tool_mod,
-    });
-    b.installArtifact(tool_exe);
-
-    const run = b.addRunArtifact(tool_exe);
-    const run_step = b.step("run-darwin-window", "Open a macOS window using std.DynLib-loaded AppKit");
-    run_step.dependOn(&run.step);
-}
-
 fn addMinimalLibSystem(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     const libsystem_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
@@ -650,7 +627,6 @@ pub fn build(b: *std.Build) void {
     const main_name = main_opt orelse "zig-smoke";
 
     addPrepareSharedCacheTool(b, optimize);
-    addDarwinWindowSmoke(b, optimize);
     const libsystem = addMinimalLibSystem(b, optimize);
     const iokit = addIOKit(b, optimize);
     const skylight = addSkyLight(b, optimize, iokit);

@@ -67,6 +67,7 @@ GROUPS = [
 def nm(args):
     # Prefer llvm-nm if available since host nm might not support Mach-O targets
     import shutil
+
     nm_bin = shutil.which("llvm-nm") or "nm"
     out = subprocess.run([nm_bin] + args, capture_output=True, text=True)
     if out.returncode != 0:
