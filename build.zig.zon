@@ -21,12 +21,13 @@
             .url = "git+https://github.com/Midstall/conduit#1d1a9d4f2ecda4fd91f571a63e816727c1a85fad",
             .hash = "conduit-0.1.0-R_mFrKEiBQCsP4aH4NpICkETF0qb408ouijHM_x5VH8c",
         },
-        // .prism = .{
-        //     .url = "git+https://github.com/Midstall/prism#b659936b2dd28e818bc273925cb35b8439157fb0",
-        //     .hash = "prism-0.1.0-PSE12N28OAC08yiTTMuxVaIrvgqfAOggXF5vprb3LKZc",
-        // },
         .prism = .{
-            .path = "../prism",
+            .url = "git+https://github.com/Midstall/prism#d50303f2302c161ff3e9fadbb24f990248fe1e0f",
+            .hash = "prism-0.1.0-PSE12N28OACyQoAXy3yrAXyMxthCSa6ur1TgjVpCL0c_",
+        },
+        .vibeutils = .{
+            .url = "git+https://github.com/kelp/vibeutils.git#018e4db41ca0abce95d759c306a76179760a83a1",
+            .hash = "vibeutils-0.13.0-re-vZMV3UgBjB-QmIYnkwl1cDKo8Yu9aEuTVguJIT2eH",
         },
     },
     .paths = .{

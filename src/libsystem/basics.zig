@@ -1,5 +1,5 @@
-//! Compiler-rt and basic libc exports: __divti3, _exit, exit, abort,
-//! __stack_chk_fail, __error, syscall, opendarwin_user_return, dyld_stub_binder.
+//! Compiler-rt and basic libc exports: __divti3, __udivti3, __modti3, __umodti3,
+//! _exit, exit, abort, __stack_chk_fail, __error, syscall, opendarwin_user_return, dyld_stub_binder.
 
 const common = @import("common.zig");
 const C = common;
@@ -9,14 +9,11 @@ pub const usize_max = C.usize_max;
 pub export var __dyld_private: usize = 0;
 pub export var __stack_chk_guard: usize = 0x595a_5b5c_5d5e_5f60;
 
-/// Compiler-rt signed 128-bit division used by Zig's optimized Darwin code.
-pub export fn __divti3(a: i128, b: i128) callconv(.c) i128 {
-    if (b == 0) return 0;
-    const negative = (a < 0) != (b < 0);
-    const au: u128 = @bitCast(a);
-    const bu: u128 = @bitCast(b);
-    const dividend: u128 = if (a < 0) 0 -% au else au;
-    const divisor: u128 = if (b < 0) 0 -% bu else bu;
+fn udivmodti4(dividend: u128, divisor: u128, rem_out: ?*u128) u128 {
+    if (divisor == 0) {
+        if (rem_out) |r| r.* = 0;
+        return 0;
+    }
     var quotient: u128 = 0;
     var remainder: u128 = 0;
     var bit: u8 = 128;
@@ -27,12 +24,47 @@ pub export fn __divti3(a: i128, b: i128) callconv(.c) i128 {
         if (remainder >= divisor) {
             remainder -%= divisor;
             quotient |= @as(u128, 1) << shift;
-            continue;
         }
     }
+    if (rem_out) |r| r.* = remainder;
+    return quotient;
+}
+
+/// Compiler-rt unsigned 128-bit division used by Zig's optimized Darwin code.
+pub export fn __udivti3(a: u128, b: u128) callconv(.c) u128 {
+    return udivmodti4(a, b, null);
+}
+
+/// Compiler-rt unsigned 128-bit modulo.
+pub export fn __umodti3(a: u128, b: u128) callconv(.c) u128 {
+    var rem: u128 = 0;
+    _ = udivmodti4(a, b, &rem);
+    return rem;
+}
+
+/// Compiler-rt signed 128-bit division used by Zig's optimized Darwin code.
+pub export fn __divti3(a: i128, b: i128) callconv(.c) i128 {
+    if (b == 0) return 0;
+    const negative = (a < 0) != (b < 0);
+    const au: u128 = @bitCast(a);
+    const bu: u128 = @bitCast(b);
+    const dividend: u128 = if (a < 0) 0 -% au else au;
+    const divisor: u128 = if (b < 0) 0 -% bu else bu;
+    const quotient = udivmodti4(dividend, divisor, null);
     return @bitCast(if (negative) 0 -% quotient else quotient);
 }
 
+/// Compiler-rt signed 128-bit modulo.
+pub export fn __modti3(a: i128, b: i128) callconv(.c) i128 {
+    if (b == 0) return 0;
+    const au: u128 = @bitCast(a);
+    const bu: u128 = @bitCast(b);
+    const dividend: u128 = if (a < 0) 0 -% au else au;
+    const divisor: u128 = if (b < 0) 0 -% bu else bu;
+    var rem: u128 = 0;
+    _ = udivmodti4(dividend, divisor, &rem);
+    return @bitCast(if (a < 0) 0 -% rem else rem);
+}
 pub export fn __error() *c_int {
     return &common.errno;
 }

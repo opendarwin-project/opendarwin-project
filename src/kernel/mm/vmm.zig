@@ -3,7 +3,7 @@ const mmu = @import("mmu.zig");
 const pmm = @import("pmm.zig");
 
 const PAGE_SIZE = mmu.PAGE_SIZE;
-const MAX_REGIONS = 128;
+const MAX_REGIONS = 512;
 // The main PIE executable is linked at 0x1_0000_0000. Keep anonymous
 // Mach VM mappings above it until the process VMM imports loader regions.
 const MMAP_BASE: u64 = 0x2_0000_0000;
@@ -169,26 +169,38 @@ pub const Vmm = struct {
         return false;
     }
 
-    fn findFreeRange(self: *Vmm, len: u64) u64 {
+    fn findFreeRangeFrom(self: *Vmm, start_hint: u64, len: u64) u64 {
         const aligned_len = pageRound(len) orelse return 0;
-        var candidate = self.next_mmap_hint;
-        for (0..1024) |_| {
-            var ok = true;
+        var candidate = (start_hint + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        if (candidate < MMAP_BASE) candidate = MMAP_BASE;
+
+        while (true) {
+            const end_overflow = @addWithOverflow(candidate, aligned_len);
+            if (end_overflow[1] != 0 or candidate >= 0x70_0000_0000) return 0;
+            const end = end_overflow[0];
+
+            var conflict = false;
             for (self.regions[0..self.region_count]) |r| {
-                const end_overflow = @addWithOverflow(candidate, aligned_len);
-                if (end_overflow[1] != 0) return 0;
-                if (candidate < r.end and end_overflow[0] > r.start) {
-                    candidate = r.end;
-                    ok = false;
+                if (candidate < r.end and end > r.start) {
+                    candidate = (r.end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+                    conflict = true;
                     break;
                 }
             }
-            if (ok) {
+            if (!conflict) {
                 self.next_mmap_hint = candidate + aligned_len;
                 return candidate;
             }
         }
-        return 0;
+    }
+
+    fn findFreeRange(self: *Vmm, len: u64) u64 {
+        const aligned_len = pageRound(len) orelse return 0;
+        var va = self.findFreeRangeFrom(self.next_mmap_hint, aligned_len);
+        if (va == 0) {
+            va = self.findFreeRangeFrom(MMAP_BASE, aligned_len);
+        }
+        return va;
     }
 
     fn mapAnonymous(self: *Vmm, addr: u64, len: u64, prot: mmu.Prot, flags: u32) u32 {
@@ -229,7 +241,11 @@ pub const Vmm = struct {
         const aligned_len = pageRound(size) orelse return .{ .kr = KERN_INVALID_ARGUMENT, .addr = requested_addr };
         var va: u64 = undefined;
         if ((flags & VM_FLAGS_ANYWHERE) != 0) {
-            va = self.findFreeRange(aligned_len);
+            const hint = if (requested_addr != 0 and requested_addr >= MMAP_BASE) requested_addr else self.next_mmap_hint;
+            va = self.findFreeRangeFrom(hint, aligned_len);
+            if (va == 0 and hint != MMAP_BASE) {
+                va = self.findFreeRangeFrom(MMAP_BASE, aligned_len);
+            }
             if (va == 0) return .{ .kr = KERN_NO_SPACE, .addr = requested_addr };
         } else {
             va = requested_addr & ~(PAGE_SIZE - 1);

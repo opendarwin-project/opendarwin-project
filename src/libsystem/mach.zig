@@ -39,9 +39,9 @@ pub export fn mach_vm_map(
 pub export fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) ?*anyopaque {
     _ = fd;
     _ = offset;
-    _ = flags;
     var mapped_addr: u64 = if (addr) |p| @intFromPtr(p) else 0;
-    const vm_flags: c_int = if (mapped_addr == 0) 1 else 0; // VM_FLAGS_ANYWHERE
+    const is_fixed = (flags & 0x0010) != 0; // MAP_FIXED
+    const vm_flags: c_int = if (is_fixed) 0 else 1; // VM_FLAGS_ANYWHERE
     const kr = mach_vm_map(mach_task_self(), &mapped_addr, len, 0, vm_flags, 0, 0, false, prot, prot, 0);
     if (kr != C.KERN_SUCCESS) {
         common.errno = 12; // ENOMEM
@@ -91,6 +91,59 @@ pub export fn task_info(
         }
     }
     return 0; // KERN_SUCCESS
+}
+pub export fn mach_host_self() c_uint {
+    return 1;
+}
+
+const HOST_VM_INFO64: c_int = 4;
+
+const vm_statistics64_data_t = extern struct {
+    free_count: u32 = 24576, // ~96 MB free of 128 MB (at 4KB pages)
+    active_count: u32 = 4096, // 16 MB
+    inactive_count: u32 = 2048, // 8 MB
+    wire_count: u32 = 2048, // 8 MB
+    zero_fill_count: u64 = 0,
+    reactivations: u64 = 0,
+    pageins: u64 = 0,
+    pageouts: u64 = 0,
+    faults: u64 = 0,
+    cow_faults: u64 = 0,
+    lookups: u64 = 0,
+    hits: u64 = 0,
+    purges: u64 = 0,
+    purgeable_count: u32 = 0,
+    speculative_count: u32 = 0,
+    decompressions: u64 = 0,
+    compressions: u64 = 0,
+    swapins: u64 = 0,
+    swapouts: u64 = 0,
+    compressor_page_count: u32 = 0,
+    throttled_count: u32 = 0,
+    external_page_count: u32 = 0,
+    internal_page_count: u32 = 4096,
+    total_uncompressed_pages_in_compressor: u64 = 0,
+    swapped_count: u64 = 0,
+};
+
+pub export fn host_statistics64(
+    host_priv: c_uint,
+    flavor: c_int,
+    host_info64_out: ?*anyopaque,
+    host_info64_outCnt: ?*c_uint,
+) c_int {
+    _ = host_priv;
+    if (flavor == HOST_VM_INFO64) {
+        if (host_info64_out) |out| {
+            const stat: *vm_statistics64_data_t = @ptrCast(@alignCast(out));
+            stat.* = .{};
+        }
+        if (host_info64_outCnt) |cnt| {
+            cnt.* = @divExact(@sizeOf(vm_statistics64_data_t), @sizeOf(u32));
+        }
+        return 0; // KERN_SUCCESS
+    }
+    return C.stubErr("host_statistics64");
 }
 
 pub export var mach_task_self_: c_uint = 0; // Initialized lazily

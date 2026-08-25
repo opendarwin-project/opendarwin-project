@@ -78,15 +78,18 @@ fn addKernel(
         // v3 driver from devicetree, and only GICv3 delivers interrupts
         // (incl. the periodic timer) under Apple's hypervisor.
         "virt,gic-version=3",
-        // "max" rather than "cortex-a72": real cortex-a72 has no PAC
-        // (FEAT_PAuth), and the kernel's PAC groundwork (arch/aarch64/pac.zig)
-        // needs a CPU model that implements it to actually exercise.
+        // On aarch64-darwin hosts, use hardware-accelerated HVF with -cpu host.
+        // On other hosts, fall back to TCG emulation with -cpu max.
         "-cpu",
-        "max",
-        // TODO: use hvf on aarch64-darwin hosts
-        // "host",
-        // "-accel",
-        // "hvf",
+        if (b.graph.host.result.cpu.arch == .aarch64 and b.graph.host.result.os.tag.isDarwin())
+            "host"
+        else
+            "max",
+        "-accel",
+        if (b.graph.host.result.cpu.arch == .aarch64 and b.graph.host.result.os.tag.isDarwin())
+            "hvf"
+        else
+            "tcg",
         "-m",
         "512M",
         "-smp",
@@ -266,6 +269,12 @@ const userland_programs = [_]UserlandProgram{
         .guest_path = "bin/window-smoke",
         .needs_skylight = true,
     },
+    .{
+        .name = "free-smoke",
+        .source = "src/userland/free_smoke.zig",
+        .description = "guest vibeutils free -h smoke demo",
+        .guest_path = "bin/free-smoke",
+    },
 };
 
 fn addUserlandProgram(
@@ -275,6 +284,7 @@ fn addUserlandProgram(
     skylight: *std.Build.Step.Compile,
     iokit: *std.Build.Step.Compile,
     prism_dep: ?*std.Build.Dependency,
+    vibeutils_dep: ?*std.Build.Dependency,
 ) *std.Build.Step.Compile {
     const guest_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
@@ -282,10 +292,39 @@ fn addUserlandProgram(
         .abi = .none,
     });
 
-    var imports: [1]std.Build.Module.Import = undefined;
+    var imports: [2]std.Build.Module.Import = undefined;
     var num_imports: usize = 0;
     if (prism_dep) |dep| {
         imports[num_imports] = .{ .name = "prism", .module = dep.module("prism") };
+        num_imports += 1;
+    }
+    if (vibeutils_dep) |dep| {
+        const build_options = b.addOptions();
+        build_options.addOption([]const u8, "version", "0.13.0");
+        const build_options_mod = build_options.createModule();
+
+        const common_mod = b.createModule(.{
+            .root_source_file = dep.path("src/common/lib.zig"),
+            .target = guest_target,
+            .optimize = optimize,
+            .link_libc = false,
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        });
+
+        const free_mod = b.createModule(.{
+            .root_source_file = dep.path("src/free.zig"),
+            .target = guest_target,
+            .optimize = optimize,
+            .link_libc = false,
+            .imports = &.{
+                .{ .name = "common", .module = common_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        });
+
+        imports[num_imports] = .{ .name = "vibeutils_free", .module = free_mod };
         num_imports += 1;
     }
 
@@ -296,7 +335,6 @@ fn addUserlandProgram(
         .link_libc = false,
         .imports = imports[0..num_imports],
     });
-
     const exe = b.addExecutable(.{
         .name = program.name,
         .root_module = mod,
@@ -591,6 +629,7 @@ fn addRootfs(
     make_img.addPrefixedFileArg("MAIN=", chosen.getEmittedBin());
 
     const install_img = b.addInstallFile(image, rootfs_basename);
+    b.getInstallStep().dependOn(&install_img.step);
     const step = b.step(
         "rootfs",
         b.fmt("Build a FAT32 QEMU rootfs with every userland program (MAIN = {s})", .{main_name}),
@@ -607,7 +646,7 @@ pub fn build(b: *std.Build) void {
 
     const rootfs_opt = b.option([]const u8, "rootfs", "Path to a raw disk image to attach as virtio-blk when running `zig build qemu`");
     // null when unset — so `qemu -Dmain=fb-smoke` can imply the smoke rootfs.
-    const main_opt = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke)");
+    const main_opt = b.option([]const u8, "main", "Userland program to install as the rootfs MAIN (zig-smoke, fb-smoke, window-smoke, free-smoke)");
     const main_name = main_opt orelse "zig-smoke";
 
     addPrepareSharedCacheTool(b, optimize);
@@ -626,11 +665,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .drivers = "software",
     });
+    const guest_vibeutils_dep = b.lazyDependency("vibeutils", .{}) orelse null;
 
     var programs: [userland_programs.len]BuiltUserland = undefined;
     for (userland_programs, 0..) |p, i| {
-        const dep = if (std.mem.eql(u8, p.name, "window-smoke")) guest_prism_dep else null;
-        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit, dep) };
+        const prism_dep = if (std.mem.eql(u8, p.name, "window-smoke")) guest_prism_dep else null;
+        const vibeutils_dep = if (std.mem.eql(u8, p.name, "free-smoke")) guest_vibeutils_dep else null;
+        programs[i] = .{ .meta = p, .exe = addUserlandProgram(b, optimize, p, skylight, iokit, prism_dep, vibeutils_dep) };
     }
     addSkyLightTests(b, optimize);
     const rootfs_step = addRootfs(b, main_name, programs[0..], libsystem, iokit, skylight);

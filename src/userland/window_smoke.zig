@@ -106,6 +106,20 @@ fn fill(dst: Backing, b: u8, g: u8, r: u8) void {
     }
 }
 
+fn flipRows(pixels: []u8, width: usize, height: usize, stride: usize) void {
+    _ = width;
+    var scratch: [4096 * 4]u8 = undefined;
+    const row_bytes = @min(stride, scratch.len);
+    for (0..height / 2) |top| {
+        const bottom = height - 1 - top;
+        const a = pixels[top * stride ..][0..row_bytes];
+        const b = pixels[bottom * stride ..][0..row_bytes];
+        @memcpy(scratch[0..row_bytes], a);
+        @memcpy(a, b);
+        @memcpy(b, scratch[0..row_bytes]);
+    }
+}
+
 const Vtx = extern struct { x: f32, y: f32, r: f32, g: f32, b: f32 };
 
 /// Same triangle as tools/darwin_window_smoke.zig, in NDC.
@@ -608,6 +622,7 @@ pub fn main() u8 {
         log(")\n");
         return 24;
     };
+    flipRows(pixels, fg_w, fg_h, fb.stride);
     _ = CGSUnlockWindowBits(cid, fg, null);
 
     // Verify cursor APIs

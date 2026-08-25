@@ -90,14 +90,17 @@ fn levelIndex(va: u64, level: u2) u9 {
 // low-address range, so a handful of dylib segments can burn through many
 // tables fast. 64 was fine for the identity-mapped-only milestone; raised
 // generously now that per-task extra mappings exist.
-const MAX_BOOT_TABLES = 1024;
+const MAX_BOOT_TABLES = 512;
 var table_pool: [MAX_BOOT_TABLES]Table align(PAGE_SIZE) = undefined;
 var table_pool_used: usize = 0;
 
 fn allocTable() *Table {
     if (page_alloc_fn) |alloc_page| {
         const pa = alloc_page();
-        return @ptrFromInt(pa);
+        if (pa == 0) @panic("mmu: out of memory allocating page table");
+        const t: *Table = @ptrFromInt(pa);
+        t.* = Table.zeroed();
+        return t;
     }
     if (table_pool_used >= MAX_BOOT_TABLES) @panic("mmu: out of boot page tables");
     const t = &table_pool[table_pool_used];
@@ -208,12 +211,12 @@ pub const Region = extern struct { pa: u64, len: u64, prot: Prot, _pad: u64 = 0 
 // table without importing kmain, which would be a circular dependency) -
 // keep in sync if the kernel's load address or image size bound changes.
 pub const KERNEL_LOAD_ADDR: u64 = 0x4008_0000;
-// Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x600000;` pad
+// Must match linker.ld's explicit `. = KERNEL_LOAD_ADDR + 0x1000000;` pad
 // before .userpages - see that file's comment for why this needs to be a
-// hard boundary rather than a generous guess. 6 MiB covers current BSS
-// (page tables, sched slots, scratch) with a little headroom; the linker
+// hard boundary rather than a generous guess. 16 MiB covers current BSS
+// (page tables, sched slots, scratch) with plenty of headroom; the linker
 // fails loudly if the image ever grows past this.
-pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0060_0000;
+pub const KERNEL_IMAGE_MAX_LEN: u64 = 0x0100_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
 pub const GIC_DIST_BASE: u64 = 0x0800_0000;
 pub const GIC_MMIO_LEN: u64 = 0x0002_0000; // covers both GICD and GICC windows
