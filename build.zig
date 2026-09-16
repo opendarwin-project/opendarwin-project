@@ -68,11 +68,6 @@ fn addKernel(
     const qemu_cmd = b.addSystemCommand(&.{
         "qemu-system-aarch64",
         "-M",
-        // Pin GICv2: our intc driver (conduit gicv2) speaks the GICv2 MMIO
-        // CPU-interface. QEMU can otherwise default to GICv3 (whose CPU
-        // interface is system-register based) depending on accelerator/CPU,
-        // which our MMIO driver can't drive - leaving all interrupts
-        // (including the timer) undelivered under HVF.
         // HVF only supports GICv3; TCG supports either. GICv3 works under
         // both, so pin it: the kernel's intc layer auto-selects the v2 or
         // v3 driver from devicetree, and only GICv3 delivers interrupts
@@ -99,7 +94,9 @@ fn addKernel(
         "-monitor",
         "unix:/tmp/opendarwin-qemu-mon.sock,server,nowait",
         "-device",
-        "virtio-gpu-device",
+        "virtio-gpu-gl-device",
+        "-display",
+        "sdl,gl=on",
         "-device",
         "virtio-tablet-device",
         "-device",

@@ -6,8 +6,8 @@
     .maximum_zig_version = "0.16.0",
     .dependencies = .{
         .dtree = .{
-            .url = "git+https://github.com/Midstall/dtree#974e557da3c6426eaf2b3284c26ff8740163d954",
-            .hash = "dtree-0.1.0-76to8JyYAABD4L0wHIrSVlX-2X-5f72L7Odt0PvXrJeu",
+            .url = "git+https://git.lilithsemi.com/LilithSemi/dtree#1a37e566bb82194acfd7d7d5514615fe4fe13c68",
+            .hash = "dtree-0.1.0-76to8Fy8AADLnQuIRRFtYugky-X4UAtcO74DyS_9Tmp3",
         },
         .xml = .{
             .url = "git+https://github.com/ianprime0509/zig-xml.git#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
@@ -18,16 +18,16 @@
             .hash = "N-V-__8AAKRqHQGd4eGkiP8lLgKhZzZG7V-mYcKKeQIFDndu",
         },
         .conduit = .{
-            .url = "git+https://github.com/Midstall/conduit#1d1a9d4f2ecda4fd91f571a63e816727c1a85fad",
-            .hash = "conduit-0.1.0-R_mFrKEiBQCsP4aH4NpICkETF0qb408ouijHM_x5VH8c",
+            .url = "git+https://git.lilithsemi.com/LilithSemi/conduit#cb9b7130b72b71001cb4347e11b0b383c0fbcdc4",
+            .hash = "conduit-0.1.0-R_mFrINUBQDxhZBhJcDJ9Jxw0Wsxo3iTZl6rKdR-o7QF",
         },
         .prism = .{
-            .url = "git+https://github.com/Midstall/prism#d50303f2302c161ff3e9fadbb24f990248fe1e0f",
-            .hash = "prism-0.1.0-PSE12N28OACyQoAXy3yrAXyMxthCSa6ur1TgjVpCL0c_",
+            .url = "git+https://git.lilithsemi.com/LilithSemi/prism#43fab514fba26d2007398b05b16c8de7a8c8c91a",
+            .hash = "prism-0.1.0-PSE12KW7OADB_fa5dVGw90h98A_jQRpU0nZhu9j8WJNJ",
         },
         .vibeutils = .{
-            .url = "git+https://github.com/kelp/vibeutils.git#018e4db41ca0abce95d759c306a76179760a83a1",
-            .hash = "vibeutils-0.13.0-re-vZMV3UgBjB-QmIYnkwl1cDKo8Yu9aEuTVguJIT2eH",
+            .url = "git+https://github.com/theoparis/vibeutils#efb1d5ee7a17fd5d30cb60418b0eab6227a4c4b5",
+            .hash = "vibeutils-0.13.0-re-vZCZ7UgBTtjhjybEvJROHZoFxFD4Km0OsASYnGfiB",
         },
     },
     .paths = .{
