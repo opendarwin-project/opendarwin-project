@@ -8,17 +8,21 @@ name = "dummy"
 path = "dummy.rs"
 
 [dependencies]
-pliron = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
-pliron-derive = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074" }
-pliron-llvm = { git = "https://github.com/pliron-org/pliron", rev = "a2ca8f0f6aa73df049f651e9021ab70100646074", default-features = false, features = ["std"] }
+pliron = { git = "https://github.com/pliron-org/pliron" }
+pliron-derive = { git = "https://github.com/pliron-org/pliron" }
+pliron-llvm = { git = "https://github.com/pliron-org/pliron", default-features = false, features = ["std"] }
+angle_wgpu = { git = "https://github.com/tinted-software/angle_wgpu" }
+rootcause = "0.13.0" 
+# TODO: convert anyhow -> rootcause
 anyhow = "1"
 annotate-snippets = "0.12"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 sha2 = "0.11"
 rustc-hash = "2"
-spin = "0.12.2"
-lz4rip = { version = "0.11.3", default-features = false, features = ["alloc"] }
+spin = "0.12.3"
+zrip = { version = "0.8.7", default-features = false, features = ["alloc"] }
+lz4rip = { version = "0.11.5", default-features = false, features = ["alloc"] }
 safe-mmio = "0.3.1"
 x86_64 = "0.15.5"
 arm-gic = "0.9.0"
@@ -26,10 +30,13 @@ aarch64-cpu = "11.2.0"
 aarch64-paging = "0.12.1"
 virtio-drivers = "0.13.0"
 object = { version = "0.40.0", default-features = false, features = ["read_core", "macho", "elf"] }
-hadris-fat = { version = "2.0.0", default-features = false }
-hadris-io = { version = "2.0.0", default-features = false }
-awint = "0.17"
+hadris-fat = { version = "2.1.0", default-features = false }
+hadris-io = { version = "2.1.0", default-features = false }
+awint = "0.18"
 nusb = "0.2.7"
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+brush = { git = "https://github.com/reubeno/brush", features = ["experimental"], artifact = ["bin"] }
 
 [profile.release]
 panic = "abort"

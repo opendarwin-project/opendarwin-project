@@ -1,50 +1,37 @@
+load(":cxx_tools.bzl", "opendarwin_cxx_toolchain")
 load(":local_demo.bzl", "local_demo_toolchains")
-load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
-load("@prelude//toolchains/cxx/clang:tools.bzl", "path_clang_tools")
 
 local_demo_toolchains()
 
-system_cxx_toolchain(
-    name = "cxx-linux",
-    link_flags = [
-        "-fuse-ld=lld",
-    ],
-    visibility = ["PUBLIC"],
-)
-
-path_clang_tools(
-    name = "clang-tools-darwin",
-    linker_type = "darwin",
-)
 genrule(
     name = "libsystem-stub-dir",
     out = "lib",
-    cmd = "mkdir -p $OUT && ar rcs $OUT/libSystem.a",
+    cmd = "mkdir -p $OUT && llvm-ar rcs $OUT/libSystem.a",
 )
 
-system_cxx_toolchain(
-    name = "cxx-darwin",
-    compiler_type = "clang",
-    link_flags = [
-        "--target=aarch64-apple-darwin",
-        "-arch",
-        "arm64",
-        "-mmacosx-version-min=14.0",
-        "-fuse-ld=lld",
-        "-nostdlib",
-        "-nostartfiles",
-        "-L$(location :libsystem-stub-dir)",
-    ],
-    _cxx_tools_info = ":clang-tools-darwin",
-    visibility = ["PUBLIC"],
-)
-
-toolchain_alias(
+opendarwin_cxx_toolchain(
     name = "cxx",
-    actual = select({
-        "prelude//os/constraints:macos": ":cxx-darwin",
-        "DEFAULT": ":cxx-linux",
+    linker = select({
+        "root//platforms:kernel": "clang",
+        "DEFAULT": "clang++",
+    }),
+    linker_type = select({
+        "root//platforms:kernel": "gnu",
+        "prelude//os/constraints:macos": "darwin",
+        "DEFAULT": "gnu",
+    }),
+    link_flags = select({
+        "root//platforms:kernel": [
+            "--target=aarch64-unknown-none-elf",
+            "-nostdlib",
+            "-nostartfiles",
+        ],
+        "prelude//os/constraints:macos": [
+            "-fuse-ld=lld",
+            "-L$(location :libsystem-stub-dir)",
+        ],
+        "DEFAULT": [],
     }),
     visibility = ["PUBLIC"],
 )
@@ -53,14 +40,21 @@ system_rust_toolchain(
     name = "rust",
     default_edition = "2024",
     rustc_flags = select({
-        "root//platforms:kernel": ["-Cpanic=abort", "-Cforce-frame-pointers=yes", "-Zunstable-options", "-Clinker-flavor=gnu-cc", "-Clink-arg=-nostdlib", "-Clink-arg=-static", "-Clink-arg=-Wl,-m,aarch64linux"],
-        "prelude//os/constraints:macos": ["-Cpanic=abort", "-Csplit-debuginfo=unpacked"],
-        "DEFAULT": [],
+        "root//platforms:kernel": [
+            "-Copt-level=s",
+            "-Cpanic=abort",
+            "-Cforce-frame-pointers=yes",
+            "-Zunstable-options",
+            "-Clinker-flavor=gcc",
+            "-Clink-arg=-nodefaultlibs",
+            "-Clink-arg=-nostdlib",
+        ],
+        "prelude//os/constraints:macos": ["-Cpanic=abort", "-Csplit-debuginfo=unpacked", "-Copt-level=2"],
+        "DEFAULT": ["-Copt-level=2"],
     }),
     rustc_target_triple = select({
         "root//platforms:kernel": "aarch64-unknown-none",
-        "prelude//os/constraints:macos": "aarch64-apple-darwin",
-        "DEFAULT": "aarch64-unknown-linux-gnu",
+        "DEFAULT": None,
     }),
     visibility = ["PUBLIC"],
 )

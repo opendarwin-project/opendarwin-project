@@ -46,10 +46,32 @@ fn dynamic_symbol_resolver(ctx: *mut u8, _ordinal: u8, name: &str) -> Option<u64
     None
 }
 
-fn spawn_zig_smoke_from_fat() -> bool {
-    let target = "MAIN";
+fn find_init_binary() -> Option<&'static str> {
+    const CANDIDATES: &[&str] = &[
+        "bin/sh",
+        "sh",
+        "sbin/launchd",
+        "bin/init",
+        "MAIN",
+    ];
+    for &path in CANDIDATES {
+        if let Some((vp, _)) = vfs::open_file(path) {
+            vfs::vrele(vp);
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn spawn_init_from_fat() -> bool {
+    let Some(target) = find_init_binary() else {
+        uart::print("opendarwin: no init binary found on rootfs\n");
+        return false;
+    };
     let Ok(main_deps) = macho::list_needed_dylibs(target) else {
-        uart::print("opendarwin: failed to list dependencies for MAIN\n");
+        uart::print("opendarwin: failed to list dependencies for ");
+        uart::print(target);
+        uart::print("\n");
         return false;
     };
 
@@ -296,9 +318,9 @@ fn el1_kmain(_dtb_arg: u64) -> ! {
     };
     let active_regions = if mem_regions[1].size > 0 { &mem_regions[..] } else { &mem_regions[0..1] };
     pmm::init(active_regions);
-    let kernel_region = mmu::Region {
-        pa: kernel_load,
-        len: mmu::KERNEL_IMAGE_MAX_LEN,
+    let ram_region = mmu::Region {
+        pa: ram_base,
+        len: ram_size,
         prot: mmu::Prot {
             writable: true,
             executable: true,
@@ -307,7 +329,7 @@ fn el1_kmain(_dtb_arg: u64) -> ! {
         },
         _pad: 0,
     };
-    mmu::enable(&[kernel_region]);
+    mmu::enable(&[ram_region]);
     mmu::set_page_allocator(|| pmm::alloc_pages_contig(1));
     slab::init();
     display::mark_stage(display::BootStage::MemoryReady);
@@ -408,7 +430,7 @@ fn el1_kmain(_dtb_arg: u64) -> ! {
         }
 
         kext::load_bundle_from_fat("SampleKext.kext");
-        let _ = spawn_zig_smoke_from_fat();
+        let _ = spawn_init_from_fat();
     }
 
     smp::wake_secondaries();

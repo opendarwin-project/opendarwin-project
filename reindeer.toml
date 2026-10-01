@@ -10,11 +10,16 @@ precise_srcs = true
 include_top_level = true
 include_workspace_members = true
 
-# Reindeer platforms mirror the rustc target triples this workspace actually
-# builds for (see platforms/BUCK + PACKAGE). `linux-arm64` is also the host
-# platform buck2/cargo/proc-macros execute on.
+[cargo]
+bindeps = true
+
 [platform.linux-arm64]
-target = "aarch64-unknown-linux-gnu"
+target = "x86_64-unknown-linux-gnu"
+execution-platform = true
+target_os = ["linux"]
+
+[platform.linux-x86_64]
+target = "x86_64-unknown-linux-gnu"
 execution-platform = true
 target_os = ["linux"]
 

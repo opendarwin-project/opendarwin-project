@@ -4,7 +4,7 @@ rust_binary(
     crate_root = "src/main.rs",
     edition = "2024",
     deps = [
-        "deps//rust:lz4rip",
+        "deps//rust:zrip",
     ],
     visibility = ["PUBLIC"],
 )
